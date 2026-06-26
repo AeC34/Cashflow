@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TornCashflow
 // @namespace    torn-cashflow-ledger
-// @version      0.3.0
+// @version      0.3.1
 // @description  Running profit & loss ledger for Torn. Categorizes every money movement in/out (job, crimes, market, casino, travel, dividends, etc.) from your own API key, values item gains/losses at market price, and shows a live cashflow panel on the home page. Auto-syncs from api.torn.com on page load (hourly at most) plus a manual sync button. All data comes from api.torn.com only and is stored locally in your browser; nothing goes to third parties. TornPDA: set injection time to END.
 // @author       AeC3
 // @match        https://www.torn.com/*
@@ -86,7 +86,10 @@
     // --- Job / company ---
     6221: { field: 'pay', sign: +1, group: 'Job pay' },
     // --- Faction ---
-    6736: { field: 'money_given', sign: +1, group: 'Faction' },
+    // 6736 = withdrawing your OWN money back out of the faction vault (already
+    // in your net worth) — a pure internal move, not income. Only OC payouts
+    // (6795) are real earnings.
+    6736: { field: 'money_given', sign: +1, group: 'Faction vault (own money)' },
     6795: { field: 'balance_change', sign: +1, group: 'Faction payout' },
     // --- Stocks: only dividends are income (buy/sell handled by networth) ---
     5531: { field: 'money', sign: +1, group: 'Dividends' },
@@ -297,7 +300,7 @@
     'Casino': 'earn', 'Job pay': 'earn', 'Faction payout': 'earn', 'Dividends': 'earn',
     'Dividends (items)': 'earn', 'Property rent': 'earn', 'Item finds': 'earn',
     'Education': 'spend', 'Rehab': 'spend', 'Subscription': 'spend',
-    'Faction': 'transfer', 'Money sent': 'transfer', 'Money received': 'transfer',
+    'Faction vault (own money)': 'transfer', 'Money sent': 'transfer', 'Money received': 'transfer',
     'Trades': 'transfer', 'Item market': 'transfer', 'Bazaar': 'transfer',
     'Shops': 'transfer', 'Travel goods': 'transfer', 'Points market': 'transfer',
     'Items received': 'transfer', 'Items sent': 'transfer',
@@ -309,7 +312,9 @@
     const movements = store.get('movements', []).filter(m => m.t >= from);
     const prices = (store.get('itemcache', {}) || {}).prices || {};
 
-    // Net value per group.
+    // Net value per group. ALIAS merges renamed groups so movements stored
+    // under an old label still land on the current one.
+    const ALIAS = { 'Faction': 'Faction vault (own money)' };
     const groups = {};
     for (const m of movements) {
       let val = 0;
@@ -318,7 +323,8 @@
       } else {
         val = m.c;
       }
-      groups[m.g] = (groups[m.g] || 0) + val;
+      const g = ALIAS[m.g] || m.g;
+      groups[g] = (groups[g] || 0) + val;
     }
 
     // Bucket groups into sections. Unknown groups default to 'transfer'
@@ -455,9 +461,9 @@
 
     const section = (title, list, totalLabel, total, cls) => {
       if (!list.length) return '';
-      return `<div class="tcf-sechead">${title}</div>${groupRows(list)}
-        <div class="tcf-row tcf-tot"><span>${totalLabel}</span>
-        <span class="${total >= 0 ? 'tcf-pos' : 'tcf-neg'} ${cls || ''}">${fmt(total)}</span></div>`;
+      const totalRow = totalLabel ? `<div class="tcf-row tcf-tot"><span>${totalLabel}</span>
+        <span class="${total >= 0 ? 'tcf-pos' : 'tcf-neg'} ${cls || ''}">${fmt(total)}</span></div>` : '';
+      return `<div class="tcf-sechead">${title}</div>${groupRows(list)}${totalRow}`;
     };
 
     const tabs = PERIODS.map((p, i) =>
@@ -488,8 +494,8 @@
         ${hasAny ? `<div class="tcf-row tcf-tot tcf-activities"><span>Net from activities</span>
           <span class="${a.netActivities >= 0 ? 'tcf-pos' : 'tcf-neg'}">${fmt(a.netActivities)}</span></div>` : ''}
         ${bankLine}
-        ${section('Transfers — not counted as profit', a.sections.transfer, 'Transfers total', a.sums.transfer)}
-        <div class="tcf-note">Transfers (faction-balance payouts, money sent/received, buying/selling items) just move value around — real trading profit shows in net-worth change above. Activities net is an estimate; net-worth change is the reliable figure.</div>
+        ${section('Transfers — not counted as profit', a.sections.transfer, null, 0)}
+        <div class="tcf-note">Transfers just move value you already own — faction-vault money is your own money (already in net worth), and buying/selling items is cash↔asset. No meaningful total. Real trading profit and vault swings show in net-worth change above; activities net is an estimate.</div>
       </div>
       <div id="tcf-foot">
         <button id="tcf-sync">${syncing ? 'Syncing…' : 'Sync now'}</button>
