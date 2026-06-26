@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TornCashflow
 // @namespace    torn-cashflow-ledger
-// @version      0.4.1
+// @version      0.4.2
 // @description  Running profit & loss ledger for Torn. Categorizes every money movement in/out (job, crimes, market, casino, travel, dividends, etc.) from your own API key, values item gains/losses at market price, and shows a live cashflow panel on the home page. Auto-syncs from api.torn.com on page load (hourly at most) plus a manual sync button. All data comes from api.torn.com only and is stored locally in your browser; nothing goes to third parties. TornPDA: set injection time to END.
 // @author       AeC3
 // @match        https://www.torn.com/*
@@ -42,7 +42,7 @@
   const API = 'https://api.torn.com/v2';
   // Bump when group labels / section classification change so stored movements
   // (which carry their group label) get cleared and re-backfilled cleanly.
-  const SCHEMA = 5;
+  const SCHEMA = 6;
   const DAY = 86400;
   const BACKFILL_DAYS = 30;
   const CALL_GAP_MS = 700;        // stay under 100 calls/min
@@ -67,7 +67,9 @@
     // --- Attacking ---
     8155: { field: 'money_mugged', sign: +1, group: 'Mugging' },         // YOU mug someone (gain)
     8156: { field: 'money_mugged', sign: -1, group: 'Mugged by others' }, // you get mugged (loss)
-    8166: { field: 'wanted_reward', sign: +1, group: 'Arrest rewards' },
+    // 8166 "Attack arrest receive" = YOU get arrested; wanted_reward is the
+    // bounty someone else claimed on you, not your money. Neutral → not mapped
+    // (see IGNORE_IDS).
     // --- Casino: handled by category in toMovement (covers every game incl.
     //     high-low's pot mechanic), not by per-logtype rules here. ---
     // --- Markets: buy = expense, sell = income ---
@@ -227,7 +229,7 @@
 
   // Intermediate trade-window steps — money moves here but the trade settles
   // via Trades in/out (4440/4441), so these must NOT be counted or surfaced.
-  const IGNORE_IDS = new Set([4442, 4443, 4480]);
+  const IGNORE_IDS = new Set([4442, 4443, 4480, 8166]);
 
   // Track unmapped logtypes that actually carry a cash field, so they're
   // surfaced (never silently dropped) and can be classified later.
@@ -366,7 +368,7 @@
   //              buying AND selling). Trading profit shows up in net-worth delta
   //              instead, so counting either side here would over/understate.
   const GROUP_SECTION = {
-    'Crimes': 'earn', 'Crime loot': 'earn', 'Mugging': 'earn', 'Arrest rewards': 'earn',
+    'Crimes': 'earn', 'Crime loot': 'earn', 'Mugging': 'earn',
     'Casino': 'earn', 'Job pay': 'earn', 'Faction payout': 'earn', 'Dividends': 'earn',
     'Dividends (items)': 'earn', 'Property rent': 'earn', 'Item finds': 'earn',
     'Bazaar sell': 'earn', 'Trades (in)': 'earn',
