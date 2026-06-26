@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TornCashflow
 // @namespace    torn-cashflow-ledger
-// @version      0.4.3
+// @version      0.4.4
 // @description  Running profit & loss ledger for Torn. Categorizes every money movement in/out (job, crimes, market, casino, travel, dividends, etc.) from your own API key, values item gains/losses at market price, and shows a live cashflow panel on the home page. Auto-syncs from api.torn.com on page load (hourly at most) plus a manual sync button. All data comes from api.torn.com only and is stored locally in your browser; nothing goes to third parties. TornPDA: set injection time to END.
 // @author       AeC3
 // @match        https://www.torn.com/*
@@ -346,7 +346,11 @@
       const invs = store.get('bankinvestments', {});
       if (cb.profit > 0 && cb.invested_at) {
         const key = String(cb.invested_at);
-        if (!invs[key]) invs[key] = { invested_at: cb.invested_at, until: cb.until || 0, profit: cb.profit };
+        // Always refresh so the active investment carries its term + rate.
+        invs[key] = {
+          invested_at: cb.invested_at, until: cb.until || 0, profit: cb.profit,
+          duration: cb.duration || 0, rate: cb.interest_rate || 0,
+        };
       }
       // keep ~120 days of matured investments
       for (const k of Object.keys(invs)) {
@@ -415,12 +419,16 @@
     // City-bank interest: realized payouts (investments matured within the
     // period) count as earnings; still-locked investments are shown pending.
     const invs = store.get('bankinvestments', {});
-    let bankRealized = 0, bankPending = 0;
+    let bankRealized = 0, bankPending = 0, bankPendingTerm = null;
     for (const k of Object.keys(invs)) {
       const iv = invs[k];
       if (!iv.until) continue;
-      if (iv.until > now) bankPending += iv.profit;        // still locked
-      else if (iv.until >= from) bankRealized += iv.profit; // matured this period
+      if (iv.until > now) {
+        bankPending += iv.profit;                          // still locked
+        if (iv.duration) bankPendingTerm = { duration: iv.duration, rate: iv.rate };
+      } else if (iv.until >= from) {
+        bankRealized += iv.profit;                          // matured this period
+      }
     }
     if (bankRealized) { sections.earn.push(['Bank interest', bankRealized]); sums.earn += bankRealized; }
 
@@ -440,7 +448,7 @@
     return {
       sections, sums,
       netActivities: sums.earn + sums.spend, // profit-from-activities (excl. transfers)
-      bankPending,
+      bankPending, bankPendingTerm,
       nwProfit, count: movements.length,
     };
   }
@@ -566,8 +574,10 @@
          <span class="${a.nwProfit >= 0 ? 'tcf-pos' : 'tcf-neg'}">${fmt(a.nwProfit)}</span></div>`
       : `<div class="tcf-headline tcf-pending">Net worth change — needs 2+ daily snapshots (collecting…)</div>`;
 
+    const bt = a.bankPendingTerm;
+    const bankTermStr = bt && bt.duration ? ` — ${bt.duration}d @ ${bt.rate}%` : '';
     const bankLine = a.bankPending
-      ? `<div class="tcf-row"><span class="tcf-grp">Bank interest (pending payout)</span><span class="tcf-pos">${fmt(a.bankPending)}</span></div>`
+      ? `<div class="tcf-row"><span class="tcf-grp">Bank interest (pending payout)${bankTermStr}</span><span class="tcf-pos">${fmt(a.bankPending)}</span></div>`
       : '';
 
     const hasAny = a.sections.earn.length || a.sections.spend.length || a.sections.transfer.length;
