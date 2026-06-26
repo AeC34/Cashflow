@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TornCashflow
 // @namespace    torn-cashflow-ledger
-// @version      0.3.4
+// @version      0.4.0
 // @description  Running profit & loss ledger for Torn. Categorizes every money movement in/out (job, crimes, market, casino, travel, dividends, etc.) from your own API key, values item gains/losses at market price, and shows a live cashflow panel on the home page. Auto-syncs from api.torn.com on page load (hourly at most) plus a manual sync button. All data comes from api.torn.com only and is stored locally in your browser; nothing goes to third parties. TornPDA: set injection time to END.
 // @author       AeC3
 // @match        https://www.torn.com/*
@@ -42,7 +42,7 @@
   const API = 'https://api.torn.com/v2';
   // Bump when group labels / section classification change so stored movements
   // (which carry their group label) get cleared and re-backfilled cleanly.
-  const SCHEMA = 3;
+  const SCHEMA = 4;
   const DAY = 86400;
   const BACKFILL_DAYS = 30;
   const CALL_GAP_MS = 700;        // stay under 100 calls/min
@@ -65,14 +65,11 @@
     9015: { field: 'money_gained', sign: +1, group: 'Crimes' },
     9020: { kind: 'item', sign: +1, group: 'Crime loot', items: d => d.items_gained },
     // --- Attacking ---
-    8156: { field: 'money_mugged', sign: +1, group: 'Mugging' },
+    8155: { field: 'money_mugged', sign: +1, group: 'Mugging' },         // YOU mug someone (gain)
+    8156: { field: 'money_mugged', sign: -1, group: 'Mugged by others' }, // you get mugged (loss)
     8166: { field: 'wanted_reward', sign: +1, group: 'Arrest rewards' },
-    // --- Casino (net bet vs winnings) ---
-    8300: { kind: 'casino', fields: [['won_amount', +1], ['bet_amount', -1]], group: 'Casino' },
-    8301: { kind: 'casino', fields: [['bet_amount', -1]], group: 'Casino' },
-    8340: { kind: 'casino', fields: [['cost', -1]], group: 'Casino' },
-    8370: { kind: 'casino', fields: [['cost', -1]], group: 'Casino' },
-    8374: { kind: 'casino', fields: [['money', +1]], group: 'Casino' },
+    // --- Casino: handled by category in toMovement (covers every game incl.
+    //     high-low's pot mechanic), not by per-logtype rules here. ---
     // --- Markets: buy = expense, sell = income ---
     1112: { field: 'cost_total', sign: -1, group: 'Item market' },
     1225: { field: 'cost_total', sign: -1, group: 'Bazaar buy' },
@@ -94,15 +91,24 @@
     // (6795) are real earnings.
     6736: { field: 'money_given', sign: +1, group: 'Faction vault (own money)' },
     6795: { field: 'balance_change', sign: +1, group: 'Faction payout' },
-    // --- Stocks: only dividends are income (buy/sell handled by networth) ---
+    // --- Stocks: dividends are income; buy/sell principal is your own money
+    //     moving (transfer) — the gain/loss shows in net worth. ---
     5531: { field: 'money', sign: +1, group: 'Dividends' },
     5530: { kind: 'item', sign: +1, group: 'Dividends (items)', items: d => d.item },
-    // --- Property rental income ---
+    5510: { field: 'worth', sign: -1, group: 'Stock buy/sell' },
+    5511: { field: 'worth', sign: +1, group: 'Stock buy/sell' },
+    // --- Bank: investing/withdrawing your own money (transfer). Interest is
+    //     captured separately from user/money. ---
+    5450: { field: 'amount', sign: -1, group: 'Bank invest/withdraw' },
+    5451: { field: 'amount', sign: +1, group: 'Bank invest/withdraw' },
+    // --- Property rental income + upkeep ---
     5937: { field: 'rent', sign: +1, group: 'Property rent' },
+    5920: { field: 'upkeep_paid', sign: -1, group: 'Property upkeep' },
     // --- Consumption / fees ---
     5960: { field: 'cost', sign: -1, group: 'Education' },
     6005: { field: 'cost', sign: -1, group: 'Rehab' },
     5555: { field: 'value', sign: -1, group: 'Subscription' },
+    9071: { field: 'money_lost', sign: -1, group: 'Crime costs' },
     // --- Item finds / transfers (valued at market) ---
     7011: { kind: 'item', sign: +1, group: 'Item finds', items: d => d.item },
     4103: { kind: 'item', sign: +1, group: 'Items received', items: d => d.items },
@@ -121,6 +127,24 @@
     'Crimes', 'Organized crimes', 'Missions', 'Racing', 'Travel', 'Bounties',
     'Bail', 'Revive', 'Trades', 'Faction', 'Credits', 'Refills', 'City finds',
   ]);
+
+  // Casino categories — handled generically (one net rule covers every game,
+  // including high-low's pot mechanic). Verified fields: bet_amount/cost out,
+  // won_amount/money in, plus `pot` on high-low cash-in.
+  const CASINO_CATS = new Set([
+    'Casino', 'Slots', 'Roulette', 'High-low', 'Keno', 'Craps', 'Lottery',
+    'Blackjack', 'Spin the wheel', 'Russian roulette', 'Poker', 'Bookie',
+  ]);
+
+  function casinoNet(data, title) {
+    let c = 0;
+    c += Number(data.won_amount) || 0;
+    c += Number(data.money) || 0;
+    if (/cash in/i.test(title)) c += Number(data.pot) || 0; // high-low payout
+    c -= Number(data.bet_amount) || 0;
+    c -= Number(data.cost) || 0;
+    return c;
+  }
 
   // ---------------------------------------------------------------------------
   // API client (api.torn.com only, rate-limited)
@@ -171,30 +195,50 @@
   //   t = timestamp, g = group, c = signed cash amount, items = item movement
   // ---------------------------------------------------------------------------
   function toMovement(entry) {
-    const id = entry.details && entry.details.id;
-    const map = LOGMAP[id];
+    const det = entry.details || {};
     const data = entry.data || {};
+    // Casino is handled generically by category (covers every game).
+    if (CASINO_CATS.has(det.category)) {
+      const c = casinoNet(data, det.title || '');
+      if (!c) return null;
+      return { t: entry.timestamp, g: 'Casino', c };
+    }
+    const map = LOGMAP[det.id];
     if (!map) return null;
     if (map.kind === 'item') {
       const items = itemList(map.items(data)).map(x => ({ id: x.id, qty: x.qty, sign: map.sign }));
       if (!items.length) return null;
       return { t: entry.timestamp, g: map.group, c: 0, items };
     }
-    if (map.kind === 'casino') {
-      let c = 0;
-      for (const [f, s] of map.fields) c += (Number(data[f]) || 0) * s;
-      return { t: entry.timestamp, g: map.group, c };
-    }
     const amount = Number(data[map.field]) || 0;
     if (!amount) return null;
     return { t: entry.timestamp, g: map.group, c: amount * map.sign };
   }
 
-  // Track money-category logtypes we have NO mapping for (so we can show them).
+  // Cash-movement field names — used to detect unmapped logtypes that actually
+  // move money (so we don't flag money-category entries with no cash, e.g. a
+  // "Crime success" outcome row or a "Bazaar add" listing).
+  const CASH_FIELDS = [
+    'money', 'money_gained', 'money_lost', 'money_given', 'money_mugged', 'cost',
+    'cost_total', 'worth', 'pay', 'fee', 'fees', 'amount', 'won_amount',
+    'bet_amount', 'paid', 'wanted_reward', 'upkeep_paid', 'winnings', 'prize',
+    'payout', 'balance_change',
+  ];
+
+  // Intermediate trade-window steps — money moves here but the trade settles
+  // via Trades in/out (4440/4441), so these must NOT be counted or surfaced.
+  const IGNORE_IDS = new Set([4442, 4443, 4480]);
+
+  // Track unmapped logtypes that actually carry a cash field, so they're
+  // surfaced (never silently dropped) and can be classified later.
   function recordUnmapped(entry) {
     const d = entry.details || {};
-    if (LOGMAP[d.id]) return;
+    if (LOGMAP[d.id] || IGNORE_IDS.has(d.id)) return;
+    if (CASINO_CATS.has(d.category)) return; // handled generically
     if (!MONEY_CATS.has(d.category)) return;
+    const data = entry.data || {};
+    const hasCash = CASH_FIELDS.some(f => Number(data[f]) > 0);
+    if (!hasCash) return; // money category but no actual cash moved
     const um = store.get('unmapped', {});
     const k = String(d.id);
     if (!um[k]) um[k] = { title: d.title, category: d.category, count: 0 };
@@ -324,12 +368,14 @@
     'Crimes': 'earn', 'Crime loot': 'earn', 'Mugging': 'earn', 'Arrest rewards': 'earn',
     'Casino': 'earn', 'Job pay': 'earn', 'Faction payout': 'earn', 'Dividends': 'earn',
     'Dividends (items)': 'earn', 'Property rent': 'earn', 'Item finds': 'earn',
+    'Bazaar sell': 'earn', 'Trades (in)': 'earn',
     'Education': 'spend', 'Rehab': 'spend', 'Subscription': 'spend',
     'Item market': 'spend', 'Shops': 'spend', 'Bazaar buy': 'spend',
     'Travel goods': 'spend', 'Points market': 'spend', 'Trades (out)': 'spend',
-    'Bazaar sell': 'earn', 'Trades (in)': 'earn',
+    'Property upkeep': 'spend', 'Crime costs': 'spend', 'Mugged by others': 'spend',
     'Faction vault (own money)': 'transfer', 'Money sent': 'transfer', 'Money received': 'transfer',
     'Items received': 'transfer', 'Items sent': 'transfer',
+    'Stock buy/sell': 'transfer', 'Bank invest/withdraw': 'transfer',
   };
 
   function aggregate(periodSec) {
@@ -436,6 +482,7 @@
         padding:8px 10px;background:#202a20;border:1px solid #3a5a3a;border-radius:6px;font-size:14px;font-weight:bold}
       .tcf-headline.tcf-pending{display:block;color:#999;font-weight:normal;font-size:11px;background:#222;border-color:#444}
       .tcf-activities{border-top-width:2px}
+      .tcf-sechead.tcf-warn{color:#e0a85e}
       #tcf-foot{padding:8px 10px;background:#262626;font-size:11px;color:#999}
       #tcf-foot button{background:#3a5a3a;color:#fff;border:1px solid #5ec46a;border-radius:4px;
         padding:4px 8px;cursor:pointer;margin-right:6px}
@@ -522,6 +569,16 @@
 
     const hasAny = a.sections.earn.length || a.sections.spend.length || a.sections.transfer.length;
 
+    // Safety net: any money-category logtype we don't classify is surfaced here
+    // (never silently dropped). Cumulative across all synced data.
+    const unmapped = store.get('unmapped', {});
+    const umKeys = Object.keys(unmapped).sort((x, y) => unmapped[y].count - unmapped[x].count);
+    const umSection = umKeys.length ? `
+      <div class="tcf-sechead tcf-warn">⚠ Uncategorized money types — not in totals</div>
+      ${umKeys.map(k => `<div class="tcf-row"><span class="tcf-grp">${unmapped[k].title}</span>
+        <span class="tcf-grp">×${unmapped[k].count}</span></div>`).join('')}
+      <div class="tcf-note">These money logtypes aren't classified yet, so they're excluded from every total above. Report them so they can be mapped.</div>` : '';
+
     panel.innerHTML = `
       <div id="tcf-head"><span class="tcf-title">TornCashflow</span><span>${collapsed ? '▲' : '▼'}</span></div>
       <div id="tcf-body">
@@ -534,7 +591,8 @@
           <span class="${a.netActivities >= 0 ? 'tcf-pos' : 'tcf-neg'}">${fmt(a.netActivities)}</span></div>` : ''}
         ${bankLine}
         ${section('Transfers — not counted as profit', a.sections.transfer, null, 0)}
-        <div class="tcf-note">Transfers are value you already own moving around — faction-vault money (already in net worth) and money/items to-from other players. Not counted as profit. Net-worth change above is the reliable bottom line.</div>
+        <div class="tcf-note">Transfers are value you already own moving around — faction-vault money (already in net worth), stock/bank moves, and money/items to-from other players. Not counted as profit. Net-worth change above is the reliable bottom line.</div>
+        ${umSection}
       </div>
       <div id="tcf-foot">
         <button id="tcf-sync">${syncing ? 'Syncing…' : 'Sync now'}</button>
