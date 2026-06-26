@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TornCashflow
 // @namespace    torn-cashflow-ledger
-// @version      0.3.1
+// @version      0.3.2
 // @description  Running profit & loss ledger for Torn. Categorizes every money movement in/out (job, crimes, market, casino, travel, dividends, etc.) from your own API key, values item gains/losses at market price, and shows a live cashflow panel on the home page. Auto-syncs from api.torn.com on page load (hourly at most) plus a manual sync button. All data comes from api.torn.com only and is stored locally in your browser; nothing goes to third parties. TornPDA: set injection time to END.
 // @author       AeC3
 // @match        https://www.torn.com/*
@@ -40,6 +40,9 @@
   // Config / constants
   // ---------------------------------------------------------------------------
   const API = 'https://api.torn.com/v2';
+  // Bump when group labels / section classification change so stored movements
+  // (which carry their group label) get cleared and re-backfilled cleanly.
+  const SCHEMA = 2;
   const DAY = 86400;
   const BACKFILL_DAYS = 30;
   const CALL_GAP_MS = 700;        // stay under 100 calls/min
@@ -72,8 +75,8 @@
     8374: { kind: 'casino', fields: [['money', +1]], group: 'Casino' },
     // --- Markets: buy = expense, sell = income ---
     1112: { field: 'cost_total', sign: -1, group: 'Item market' },
-    1225: { field: 'cost_total', sign: -1, group: 'Bazaar' },
-    1226: { field: 'cost_total', sign: +1, group: 'Bazaar' },
+    1225: { field: 'cost_total', sign: -1, group: 'Bazaar buy' },
+    1226: { field: 'cost_total', sign: +1, group: 'Bazaar sell' },
     4200: { field: 'cost_total', sign: -1, group: 'Shops' },
     4201: { field: 'cost_total', sign: -1, group: 'Travel goods' },
     5010: { field: 'cost_total', sign: -1, group: 'Points market' },
@@ -217,6 +220,12 @@
     if (syncing) return;
     syncing = true;
     try {
+      // Classification changed? Drop stored movements and force a full backfill
+      // so historical entries are re-labelled under the current scheme.
+      if (store.get('schema', 0) !== SCHEMA) {
+        store.set('movements', []);
+        store.set('sync', { newest: 0 });
+      }
       const sync = store.get('sync', { newest: 0 });
       const movements = store.get('movements', []);
       const seenNewest = sync.newest || 0;
@@ -252,6 +261,7 @@
       merged.sort((a, b) => a.t - b.t);
       store.set('movements', merged);
       store.set('sync', { newest: newNewest, lastRun: nowTs, calls });
+      store.set('schema', SCHEMA);
 
       // Networth snapshot (for unrealised P&L).
       await maybeSnapshotNetworth(nowTs);
@@ -300,9 +310,10 @@
     'Casino': 'earn', 'Job pay': 'earn', 'Faction payout': 'earn', 'Dividends': 'earn',
     'Dividends (items)': 'earn', 'Property rent': 'earn', 'Item finds': 'earn',
     'Education': 'spend', 'Rehab': 'spend', 'Subscription': 'spend',
+    'Item market': 'spend', 'Shops': 'spend', 'Bazaar buy': 'spend',
+    'Bazaar sell': 'earn',
     'Faction vault (own money)': 'transfer', 'Money sent': 'transfer', 'Money received': 'transfer',
-    'Trades': 'transfer', 'Item market': 'transfer', 'Bazaar': 'transfer',
-    'Shops': 'transfer', 'Travel goods': 'transfer', 'Points market': 'transfer',
+    'Trades': 'transfer', 'Travel goods': 'transfer', 'Points market': 'transfer',
     'Items received': 'transfer', 'Items sent': 'transfer',
   };
 
@@ -495,7 +506,7 @@
           <span class="${a.netActivities >= 0 ? 'tcf-pos' : 'tcf-neg'}">${fmt(a.netActivities)}</span></div>` : ''}
         ${bankLine}
         ${section('Transfers — not counted as profit', a.sections.transfer, null, 0)}
-        <div class="tcf-note">Transfers just move value you already own — faction-vault money is your own money (already in net worth), and buying/selling items is cash↔asset. No meaningful total. Real trading profit and vault swings show in net-worth change above; activities net is an estimate.</div>
+        <div class="tcf-note">Transfers are value you already own moving around — faction-vault money (already in net worth), points, money/items to-from other players. Not counted as profit. Net-worth change above is the reliable bottom line.</div>
       </div>
       <div id="tcf-foot">
         <button id="tcf-sync">${syncing ? 'Syncing…' : 'Sync now'}</button>
@@ -526,7 +537,8 @@
     // Auto-sync on load if it's been a while (>1h) and a key exists.
     const sync = store.get('sync', {});
     const now = Math.floor(Date.now() / 1000);
-    if (store.get('apikey', '') && (!sync.lastRun || now - sync.lastRun > 3600)) {
+    const schemaChanged = store.get('schema', 0) !== SCHEMA;
+    if (store.get('apikey', '') && (schemaChanged || !sync.lastRun || now - sync.lastRun > 3600)) {
       runSync().then(render).catch(() => {});
     }
     // The home page is a React SPA: the content host may mount after us, and
