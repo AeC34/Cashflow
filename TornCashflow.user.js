@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TornCashflow
 // @namespace    torn-cashflow-ledger
-// @version      0.3.2
+// @version      0.3.3
 // @description  Running profit & loss ledger for Torn. Categorizes every money movement in/out (job, crimes, market, casino, travel, dividends, etc.) from your own API key, values item gains/losses at market price, and shows a live cashflow panel on the home page. Auto-syncs from api.torn.com on page load (hourly at most) plus a manual sync button. All data comes from api.torn.com only and is stored locally in your browser; nothing goes to third parties. TornPDA: set injection time to END.
 // @author       AeC3
 // @match        https://www.torn.com/*
@@ -42,7 +42,7 @@
   const API = 'https://api.torn.com/v2';
   // Bump when group labels / section classification change so stored movements
   // (which carry their group label) get cleared and re-backfilled cleanly.
-  const SCHEMA = 2;
+  const SCHEMA = 3;
   const DAY = 86400;
   const BACKFILL_DAYS = 30;
   const CALL_GAP_MS = 700;        // stay under 100 calls/min
@@ -81,8 +81,8 @@
     4201: { field: 'cost_total', sign: -1, group: 'Travel goods' },
     5010: { field: 'cost_total', sign: -1, group: 'Points market' },
     // --- Trades: final movements only (the "add" steps are intermediate) ---
-    4440: { field: 'money', sign: -1, group: 'Trades' },
-    4441: { field: 'money', sign: +1, group: 'Trades' },
+    4440: { field: 'money', sign: -1, group: 'Trades (out)' },
+    4441: { field: 'money', sign: +1, group: 'Trades (in)' },
     // --- Direct money transfers ---
     4800: { field: 'money', sign: -1, group: 'Money sent' },
     4810: { field: 'money', sign: +1, group: 'Money received' },
@@ -311,9 +311,9 @@
     'Dividends (items)': 'earn', 'Property rent': 'earn', 'Item finds': 'earn',
     'Education': 'spend', 'Rehab': 'spend', 'Subscription': 'spend',
     'Item market': 'spend', 'Shops': 'spend', 'Bazaar buy': 'spend',
-    'Bazaar sell': 'earn',
+    'Travel goods': 'spend', 'Points market': 'spend', 'Trades (out)': 'spend',
+    'Bazaar sell': 'earn', 'Trades (in)': 'earn',
     'Faction vault (own money)': 'transfer', 'Money sent': 'transfer', 'Money received': 'transfer',
-    'Trades': 'transfer', 'Travel goods': 'transfer', 'Points market': 'transfer',
     'Items received': 'transfer', 'Items sent': 'transfer',
   };
 
@@ -506,7 +506,7 @@
           <span class="${a.netActivities >= 0 ? 'tcf-pos' : 'tcf-neg'}">${fmt(a.netActivities)}</span></div>` : ''}
         ${bankLine}
         ${section('Transfers — not counted as profit', a.sections.transfer, null, 0)}
-        <div class="tcf-note">Transfers are value you already own moving around — faction-vault money (already in net worth), points, money/items to-from other players. Not counted as profit. Net-worth change above is the reliable bottom line.</div>
+        <div class="tcf-note">Transfers are value you already own moving around — faction-vault money (already in net worth) and money/items to-from other players. Not counted as profit. Net-worth change above is the reliable bottom line.</div>
       </div>
       <div id="tcf-foot">
         <button id="tcf-sync">${syncing ? 'Syncing…' : 'Sync now'}</button>
