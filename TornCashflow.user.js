@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TornCashflow
 // @namespace    torn-cashflow-ledger
-// @version      0.4.2
+// @version      0.4.3
 // @description  Running profit & loss ledger for Torn. Categorizes every money movement in/out (job, crimes, market, casino, travel, dividends, etc.) from your own API key, values item gains/losses at market price, and shows a live cashflow panel on the home page. Auto-syncs from api.torn.com on page load (hourly at most) plus a manual sync button. All data comes from api.torn.com only and is stored locally in your browser; nothing goes to third parties. TornPDA: set injection time to END.
 // @author       AeC3
 // @match        https://www.torn.com/*
@@ -42,7 +42,7 @@
   const API = 'https://api.torn.com/v2';
   // Bump when group labels / section classification change so stored movements
   // (which carry their group label) get cleared and re-backfilled cleanly.
-  const SCHEMA = 6;
+  const SCHEMA = 7;
   const DAY = 86400;
   const BACKFILL_DAYS = 30;
   const CALL_GAP_MS = 700;        // stay under 100 calls/min
@@ -99,10 +99,10 @@
     5530: { kind: 'item', sign: +1, group: 'Dividends (items)', items: d => d.item },
     5510: { field: 'worth', sign: -1, group: 'Stock buy/sell' },
     5511: { field: 'worth', sign: +1, group: 'Stock buy/sell' },
-    // --- Bank: investing/withdrawing your own money (transfer). Interest is
-    //     captured separately from user/money. ---
-    5450: { field: 'amount', sign: -1, group: 'Bank invest/withdraw' },
-    5451: { field: 'amount', sign: +1, group: 'Bank invest/withdraw' },
+    // --- Bank: investing/withdrawing your own PRINCIPAL (transfer). The profit
+    //     (interest) is captured separately as "Bank interest" from user/money. ---
+    5450: { field: 'amount', sign: -1, group: 'Bank principal (own money)' },
+    5451: { field: 'amount', sign: +1, group: 'Bank principal (own money)' },
     // --- Property rental income + upkeep ---
     5937: { field: 'rent', sign: +1, group: 'Property rent' },
     5920: { field: 'upkeep_paid', sign: -1, group: 'Property upkeep' },
@@ -378,7 +378,7 @@
     'Property upkeep': 'spend', 'Crime costs': 'spend', 'Mugged by others': 'spend',
     'Faction vault (own money)': 'transfer', 'Money sent': 'transfer', 'Money received': 'transfer',
     'Items received': 'transfer', 'Items sent': 'transfer',
-    'Stock buy/sell': 'transfer', 'Bank invest/withdraw': 'transfer',
+    'Stock buy/sell': 'transfer', 'Bank principal (own money)': 'transfer',
   };
 
   function aggregate(periodSec) {
