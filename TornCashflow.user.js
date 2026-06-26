@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TornCashflow
 // @namespace    torn-cashflow-ledger
-// @version      0.2.2
+// @version      0.2.3
 // @description  Running profit & loss ledger for Torn. Categorizes every money movement in/out (job, crimes, market, casino, travel, dividends, etc.) from your own API key, values item gains/losses at market price, and shows a live cashflow panel on the home page. Auto-syncs from api.torn.com on page load (hourly at most) plus a manual sync button. All data comes from api.torn.com only and is stored locally in your browser; nothing goes to third parties. TornPDA: set injection time to END.
 // @author       AeC3
 // @match        https://www.torn.com/*
@@ -342,13 +342,13 @@
   function injectStyle() {
     if (document.getElementById('tcf-style')) return;
     const css = `
-      #tcf-panel{position:fixed;bottom:16px;right:16px;width:320px;max-height:70vh;
+      #tcf-panel{display:block;width:100%;max-width:640px;margin:0 auto 12px auto;box-sizing:border-box;
         background:#1c1c1c;color:#e8e8e8;font:12px/1.4 Arial,sans-serif;border:1px solid #444;
-        border-radius:8px;z-index:99999;box-shadow:0 4px 16px rgba(0,0,0,.5);overflow:hidden;display:flex;flex-direction:column}
+        border-radius:8px;box-shadow:0 2px 6px rgba(0,0,0,.3);overflow:hidden}
       #tcf-head{display:flex;align-items:center;justify-content:space-between;padding:8px 10px;
         background:#262626;cursor:pointer;font-weight:bold}
       #tcf-head .tcf-title{color:#5ec46a}
-      #tcf-body{padding:10px;overflow-y:auto}
+      #tcf-body{padding:10px}
       #tcf-tabs{display:flex;gap:4px;margin-bottom:8px}
       #tcf-tabs button{flex:1;padding:4px;background:#2e2e2e;color:#ccc;border:1px solid #444;
         border-radius:4px;cursor:pointer}
@@ -372,17 +372,31 @@
     (document.head || document.documentElement).appendChild(style);
   }
 
-  function render() {
+  // Mount the panel at the TOP of the page content (normal flow, not sticky).
+  // Uses a host-selector fallback chain so it doesn't depend on one exact node.
+  function mountPanel() {
     let panel = document.getElementById('tcf-panel');
-    if (!panel) {
-      injectStyle();
-      panel = document.createElement('div');
-      panel.id = 'tcf-panel';
-      document.body.appendChild(panel);
-    }
+    if (panel && panel.isConnected) return panel;
+    injectStyle();
+    panel = document.createElement('div');
+    panel.id = 'tcf-panel';
+    const host = [
+      document.querySelector('.content-wrapper'),
+      document.querySelector('[role="main"]'),
+      document.querySelector('#mainContainer'),
+      document.querySelector('main'),
+      document.querySelector('#react-root'),
+      document.body,
+    ].find(el => el !== null) || document.documentElement;
+    host.insertBefore(panel, host.firstChild);
+    return panel;
+  }
+
+  function render() {
+    const panel = mountPanel();
+    const collapsed = panel.classList.contains('tcf-collapsed');
     const hasKey = !!store.get('apikey', '');
     const sync = store.get('sync', {});
-    const collapsed = panel.classList.contains('tcf-collapsed');
 
     if (!hasKey) {
       panel.innerHTML = `
@@ -464,6 +478,13 @@
     if (store.get('apikey', '') && (!sync.lastRun || now - sync.lastRun > 3600)) {
       runSync().then(render).catch(() => {});
     }
+    // The home page is a React SPA: the content host may mount after us, and
+    // re-renders can drop our panel. Re-mount if it ever goes missing.
+    const keepAlive = new MutationObserver(() => {
+      const p = document.getElementById('tcf-panel');
+      if (!p || !p.isConnected) render();
+    });
+    if (document.body) keepAlive.observe(document.body, { childList: true, subtree: true });
   }
 
   if (document.body) init();
