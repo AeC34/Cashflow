@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TornCashflow
 // @namespace    torn-cashflow-ledger
-// @version      0.4.0
+// @version      0.4.1
 // @description  Running profit & loss ledger for Torn. Categorizes every money movement in/out (job, crimes, market, casino, travel, dividends, etc.) from your own API key, values item gains/losses at market price, and shows a live cashflow panel on the home page. Auto-syncs from api.torn.com on page load (hourly at most) plus a manual sync button. All data comes from api.torn.com only and is stored locally in your browser; nothing goes to third parties. TornPDA: set injection time to END.
 // @author       AeC3
 // @match        https://www.torn.com/*
@@ -42,7 +42,7 @@
   const API = 'https://api.torn.com/v2';
   // Bump when group labels / section classification change so stored movements
   // (which carry their group label) get cleared and re-backfilled cleanly.
-  const SCHEMA = 4;
+  const SCHEMA = 5;
   const DAY = 86400;
   const BACKFILL_DAYS = 30;
   const CALL_GAP_MS = 700;        // stay under 100 calls/min
@@ -269,6 +269,7 @@
       if (store.get('schema', 0) !== SCHEMA) {
         store.set('movements', []);
         store.set('sync', { newest: 0 });
+        store.set('unmapped', {}); // rebuild fresh under current mapping + cash filter
       }
       const sync = store.get('sync', { newest: 0 });
       const movements = store.get('movements', []);
