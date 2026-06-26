@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TornCashflow
 // @namespace    torn-cashflow-ledger
-// @version      0.3.3
+// @version      0.3.4
 // @description  Running profit & loss ledger for Torn. Categorizes every money movement in/out (job, crimes, market, casino, travel, dividends, etc.) from your own API key, values item gains/losses at market price, and shows a live cashflow panel on the home page. Auto-syncs from api.torn.com on page load (hourly at most) plus a manual sync button. All data comes from api.torn.com only and is stored locally in your browser; nothing goes to third parties. TornPDA: set injection time to END.
 // @author       AeC3
 // @match        https://www.torn.com/*
@@ -286,11 +286,26 @@
     store.set('networth', keep);
   }
 
+  // Track city-bank investments. Interest isn't in the log, but each locked
+  // investment is guaranteed to pay `profit` at its `until` date. We record
+  // every distinct investment (keyed by invested_at) so that once it matures
+  // we can count its interest as realized profit in the period it landed.
   async function refreshBankProfit() {
     try {
       const data = await apiGet('/user/money');
       const cb = data.money && data.money.city_bank;
-      if (cb) store.set('bankprofit', { profit: cb.profit || 0, until: cb.until || 0, t: Math.floor(Date.now() / 1000) });
+      if (!cb) return;
+      const now = Math.floor(Date.now() / 1000);
+      const invs = store.get('bankinvestments', {});
+      if (cb.profit > 0 && cb.invested_at) {
+        const key = String(cb.invested_at);
+        if (!invs[key]) invs[key] = { invested_at: cb.invested_at, until: cb.until || 0, profit: cb.profit };
+      }
+      // keep ~120 days of matured investments
+      for (const k of Object.keys(invs)) {
+        if (invs[k].until && invs[k].until < now - 120 * DAY) delete invs[k];
+      }
+      store.set('bankinvestments', invs);
     } catch (e) {}
   }
 
@@ -347,6 +362,19 @@
       sections[sec].push([g, net]);
       sums[sec] += net;
     }
+
+    // City-bank interest: realized payouts (investments matured within the
+    // period) count as earnings; still-locked investments are shown pending.
+    const invs = store.get('bankinvestments', {});
+    let bankRealized = 0, bankPending = 0;
+    for (const k of Object.keys(invs)) {
+      const iv = invs[k];
+      if (!iv.until) continue;
+      if (iv.until > now) bankPending += iv.profit;        // still locked
+      else if (iv.until >= from) bankRealized += iv.profit; // matured this period
+    }
+    if (bankRealized) { sections.earn.push(['Bank interest', bankRealized]); sums.earn += bankRealized; }
+
     for (const k of Object.keys(sections)) {
       sections[k].sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]));
     }
@@ -363,6 +391,7 @@
     return {
       sections, sums,
       netActivities: sums.earn + sums.spend, // profit-from-activities (excl. transfers)
+      bankPending,
       nwProfit, count: movements.length,
     };
   }
@@ -464,7 +493,6 @@
     }
 
     const a = aggregate(PERIODS[activePeriod].sec);
-    const bank = store.get('bankprofit', null);
 
     const groupRows = (list) => list.map(([g, net]) => `
       <div class="tcf-row"><span class="tcf-grp">${g}</span>
@@ -488,8 +516,8 @@
          <span class="${a.nwProfit >= 0 ? 'tcf-pos' : 'tcf-neg'}">${fmt(a.nwProfit)}</span></div>`
       : `<div class="tcf-headline tcf-pending">Net worth change — needs 2+ daily snapshots (collecting…)</div>`;
 
-    const bankLine = bank
-      ? `<div class="tcf-row"><span class="tcf-grp">Accrued bank interest</span><span class="tcf-pos">${fmt(bank.profit)}</span></div>`
+    const bankLine = a.bankPending
+      ? `<div class="tcf-row"><span class="tcf-grp">Bank interest (pending payout)</span><span class="tcf-pos">${fmt(a.bankPending)}</span></div>`
       : '';
 
     const hasAny = a.sections.earn.length || a.sections.spend.length || a.sections.transfer.length;
