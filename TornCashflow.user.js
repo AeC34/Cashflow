@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TornCashflow
 // @namespace    torn-cashflow-ledger
-// @version      0.2.3
+// @version      0.3.0
 // @description  Running profit & loss ledger for Torn. Categorizes every money movement in/out (job, crimes, market, casino, travel, dividends, etc.) from your own API key, values item gains/losses at market price, and shows a live cashflow panel on the home page. Auto-syncs from api.torn.com on page load (hourly at most) plus a manual sync button. All data comes from api.torn.com only and is stored locally in your browser; nothing goes to third parties. TornPDA: set injection time to END.
 // @author       AeC3
 // @match        https://www.torn.com/*
@@ -284,31 +284,57 @@
   // ---------------------------------------------------------------------------
   // Aggregation for a period (seconds back from now).
   // ---------------------------------------------------------------------------
+  // Which section each group belongs to:
+  //   earn     = genuine value created by gameplay (counts toward profit)
+  //   spend    = genuine value consumed (counts toward profit, negative)
+  //   transfer = value just MOVED, not created/destroyed — EXCLUDED from profit.
+  //              Covers player<->player money, your own faction-balance payouts,
+  //              and cash<->asset conversions (all item/market/bazaar/points
+  //              buying AND selling). Trading profit shows up in net-worth delta
+  //              instead, so counting either side here would over/understate.
+  const GROUP_SECTION = {
+    'Crimes': 'earn', 'Crime loot': 'earn', 'Mugging': 'earn', 'Arrest rewards': 'earn',
+    'Casino': 'earn', 'Job pay': 'earn', 'Faction payout': 'earn', 'Dividends': 'earn',
+    'Dividends (items)': 'earn', 'Property rent': 'earn', 'Item finds': 'earn',
+    'Education': 'spend', 'Rehab': 'spend', 'Subscription': 'spend',
+    'Faction': 'transfer', 'Money sent': 'transfer', 'Money received': 'transfer',
+    'Trades': 'transfer', 'Item market': 'transfer', 'Bazaar': 'transfer',
+    'Shops': 'transfer', 'Travel goods': 'transfer', 'Points market': 'transfer',
+    'Items received': 'transfer', 'Items sent': 'transfer',
+  };
+
   function aggregate(periodSec) {
     const now = Math.floor(Date.now() / 1000);
     const from = now - periodSec;
     const movements = store.get('movements', []).filter(m => m.t >= from);
     const prices = (store.get('itemcache', {}) || {}).prices || {};
-    const groups = {}; // group -> {income, expense}
-    let cashIn = 0, cashOut = 0, itemVal = 0;
 
+    // Net value per group.
+    const groups = {};
     for (const m of movements) {
-      const g = groups[m.g] || (groups[m.g] = { income: 0, expense: 0 });
+      let val = 0;
       if (m.items) {
-        for (const it of m.items) {
-          const v = (prices[it.id] || 0) * it.qty * it.sign;
-          if (v === 0) continue; // unknown/zero-priced item — don't inflate rows
-          if (v > 0) { g.income += v; cashIn += v; } else { g.expense += v; cashOut += v; }
-          itemVal += v;
-        }
-      } else if (m.c >= 0) {
-        g.income += m.c; cashIn += m.c;
+        for (const it of m.items) val += (prices[it.id] || 0) * it.qty * it.sign;
       } else {
-        g.expense += m.c; cashOut += m.c;
+        val = m.c;
       }
+      groups[m.g] = (groups[m.g] || 0) + val;
     }
 
-    // Networth-based total profit over the period (nearest earlier snapshot).
+    // Bucket groups into sections. Unknown groups default to 'transfer'
+    // (conservative — never inflate profit with something unclassified).
+    const sections = { earn: [], spend: [], transfer: [] };
+    const sums = { earn: 0, spend: 0, transfer: 0 };
+    for (const [g, net] of Object.entries(groups)) {
+      const sec = GROUP_SECTION[g] || 'transfer';
+      sections[sec].push([g, net]);
+      sums[sec] += net;
+    }
+    for (const k of Object.keys(sections)) {
+      sections[k].sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]));
+    }
+
+    // Net-worth-based total profit over the period (nearest earlier snapshot).
     const snaps = store.get('networth', []);
     let nwProfit = null;
     if (snaps.length) {
@@ -318,13 +344,14 @@
     }
 
     return {
-      groups, cashIn, cashOut, net: cashIn + cashOut, itemVal,
+      sections, sums,
+      netActivities: sums.earn + sums.spend, // profit-from-activities (excl. transfers)
       nwProfit, count: movements.length,
     };
   }
 
   // ---------------------------------------------------------------------------
-  // UI (floating panel — no dependency on Torn's DOM structure)
+  // UI (inline panel mounted at the top of the page content)
   // ---------------------------------------------------------------------------
   const PERIODS = [
     { label: 'Today', sec: DAY },
@@ -357,7 +384,12 @@
       .tcf-grp{color:#bbb}
       .tcf-pos{color:#5ec46a}
       .tcf-neg{color:#e06a6a}
-      .tcf-tot{margin-top:8px;padding-top:8px;border-top:1px solid #555;font-weight:bold}
+      .tcf-tot{margin-top:4px;padding-top:6px;border-top:1px solid #555;font-weight:bold}
+      .tcf-sechead{margin-top:12px;margin-bottom:2px;font-weight:bold;color:#9ab;text-transform:uppercase;font-size:10px;letter-spacing:.5px}
+      .tcf-headline{display:flex;justify-content:space-between;align-items:center;margin:4px 0 8px 0;
+        padding:8px 10px;background:#202a20;border:1px solid #3a5a3a;border-radius:6px;font-size:14px;font-weight:bold}
+      .tcf-headline.tcf-pending{display:block;color:#999;font-weight:normal;font-size:11px;background:#222;border-color:#444}
+      .tcf-activities{border-top-width:2px}
       #tcf-foot{padding:8px 10px;background:#262626;font-size:11px;color:#999}
       #tcf-foot button{background:#3a5a3a;color:#fff;border:1px solid #5ec46a;border-radius:4px;
         padding:4px 8px;cursor:pointer;margin-right:6px}
@@ -416,35 +448,48 @@
 
     const a = aggregate(PERIODS[activePeriod].sec);
     const bank = store.get('bankprofit', null);
-    const sortedGroups = Object.entries(a.groups)
-      .map(([g, v]) => [g, v.income + v.expense, v])
-      .sort((x, y) => Math.abs(y[1]) - Math.abs(x[1]));
 
-    const rows = sortedGroups.map(([g, net]) => `
+    const groupRows = (list) => list.map(([g, net]) => `
       <div class="tcf-row"><span class="tcf-grp">${g}</span>
       <span class="${net >= 0 ? 'tcf-pos' : 'tcf-neg'}">${fmt(net)}</span></div>`).join('');
+
+    const section = (title, list, totalLabel, total, cls) => {
+      if (!list.length) return '';
+      return `<div class="tcf-sechead">${title}</div>${groupRows(list)}
+        <div class="tcf-row tcf-tot"><span>${totalLabel}</span>
+        <span class="${total >= 0 ? 'tcf-pos' : 'tcf-neg'} ${cls || ''}">${fmt(total)}</span></div>`;
+    };
 
     const tabs = PERIODS.map((p, i) =>
       `<button class="${i === activePeriod ? 'active' : ''}" data-i="${i}">${p.label}</button>`).join('');
 
     const lastRun = sync.lastRun ? new Date(sync.lastRun * 1000).toLocaleString('en-US') : 'never';
-    const nwLine = a.nwProfit !== null
-      ? `<div class="tcf-row tcf-tot"><span>Net worth change</span><span class="${a.nwProfit >= 0 ? 'tcf-pos' : 'tcf-neg'}">${fmt(a.nwProfit)}</span></div>`
-      : `<div class="tcf-note">Net worth change shows after 2+ snapshots.</div>`;
+
+    // Headline = net-worth change (the only fully reliable profit number).
+    const headline = a.nwProfit !== null
+      ? `<div class="tcf-headline"><span>Net worth change</span>
+         <span class="${a.nwProfit >= 0 ? 'tcf-pos' : 'tcf-neg'}">${fmt(a.nwProfit)}</span></div>`
+      : `<div class="tcf-headline tcf-pending">Net worth change — needs 2+ daily snapshots (collecting…)</div>`;
+
     const bankLine = bank
       ? `<div class="tcf-row"><span class="tcf-grp">Accrued bank interest</span><span class="tcf-pos">${fmt(bank.profit)}</span></div>`
       : '';
+
+    const hasAny = a.sections.earn.length || a.sections.spend.length || a.sections.transfer.length;
 
     panel.innerHTML = `
       <div id="tcf-head"><span class="tcf-title">TornCashflow</span><span>${collapsed ? '▲' : '▼'}</span></div>
       <div id="tcf-body">
         <div id="tcf-tabs">${tabs}</div>
-        ${rows || '<div class="tcf-note">No movements in this period. Run a sync.</div>'}
-        <div class="tcf-row tcf-tot"><span>Income</span><span class="tcf-pos">${fmt(a.cashIn)}</span></div>
-        <div class="tcf-row"><span>Expenses</span><span class="tcf-neg">${fmt(a.cashOut)}</span></div>
-        <div class="tcf-row tcf-tot"><span>Net (log)</span><span class="${a.net >= 0 ? 'tcf-pos' : 'tcf-neg'}">${fmt(a.net)}</span></div>
+        ${headline}
+        ${hasAny ? '' : '<div class="tcf-note">No movements in this period. Run a sync.</div>'}
+        ${section('Earnings', a.sections.earn, 'Earnings total', a.sums.earn)}
+        ${section('Spending', a.sections.spend, 'Spending total', a.sums.spend)}
+        ${hasAny ? `<div class="tcf-row tcf-tot tcf-activities"><span>Net from activities</span>
+          <span class="${a.netActivities >= 0 ? 'tcf-pos' : 'tcf-neg'}">${fmt(a.netActivities)}</span></div>` : ''}
         ${bankLine}
-        ${nwLine}
+        ${section('Transfers — not counted as profit', a.sections.transfer, 'Transfers total', a.sums.transfer)}
+        <div class="tcf-note">Transfers (faction-balance payouts, money sent/received, buying/selling items) just move value around — real trading profit shows in net-worth change above. Activities net is an estimate; net-worth change is the reliable figure.</div>
       </div>
       <div id="tcf-foot">
         <button id="tcf-sync">${syncing ? 'Syncing…' : 'Sync now'}</button>
