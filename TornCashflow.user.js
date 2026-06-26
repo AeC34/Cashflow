@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         TornCashflow
 // @namespace    torn-cashflow-ledger
-// @version      0.2.1
-// @description  Running profit & loss ledger for Torn. Tracks every money movement in and out (job, crimes, market, casino, mugging, travel, dividends, etc.) from your own Torn API key, categorizes it, values item gains/losses at market price, and shows a live cashflow overview on the home page. Auto-syncs from api.torn.com on page load (at most hourly) plus a manual sync button. All data comes from api.torn.com only and is stored locally in your browser; nothing is sent to any third party. TornPDA users should set injection time to END.
+// @version      0.2.2
+// @description  Running profit & loss ledger for Torn. Categorizes every money movement in/out (job, crimes, market, casino, travel, dividends, etc.) from your own API key, values item gains/losses at market price, and shows a live cashflow panel on the home page. Auto-syncs from api.torn.com on page load (hourly at most) plus a manual sync button. All data comes from api.torn.com only and is stored locally in your browser; nothing goes to third parties. TornPDA: set injection time to END.
 // @author       AeC3
 // @match        https://www.torn.com/*
 // @grant        None
