@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TornCashflow
 // @namespace    torn-cashflow-ledger
-// @version      0.4.4
+// @version      0.4.5
 // @description  Running profit & loss ledger for Torn. Categorizes every money movement in/out (job, crimes, market, casino, travel, dividends, etc.) from your own API key, values item gains/losses at market price, and shows a live cashflow panel on the home page. Auto-syncs from api.torn.com on page load (hourly at most) plus a manual sync button. All data comes from api.torn.com only and is stored locally in your browser; nothing goes to third parties. TornPDA: set injection time to END.
 // @author       AeC3
 // @match        https://www.torn.com/*
@@ -42,7 +42,7 @@
   const API = 'https://api.torn.com/v2';
   // Bump when group labels / section classification change so stored movements
   // (which carry their group label) get cleared and re-backfilled cleanly.
-  const SCHEMA = 7;
+  const SCHEMA = 8;
   const DAY = 86400;
   const BACKFILL_DAYS = 30;
   const CALL_GAP_MS = 700;        // stay under 100 calls/min
@@ -99,10 +99,12 @@
     5530: { kind: 'item', sign: +1, group: 'Dividends (items)', items: d => d.item },
     5510: { field: 'worth', sign: -1, group: 'Stock buy/sell' },
     5511: { field: 'worth', sign: +1, group: 'Stock buy/sell' },
-    // --- Bank: investing/withdrawing your own PRINCIPAL (transfer). The profit
-    //     (interest) is captured separately as "Bank interest" from user/money. ---
-    5450: { field: 'amount', sign: -1, group: 'Bank principal (own money)' },
-    5451: { field: 'amount', sign: +1, group: 'Bank principal (own money)' },
+    // --- Bank: the invest entry carries worth (principal+interest) and amount
+    //     (principal); the interest = worth - amount is the profit, recognized
+    //     when you lock it in (it's guaranteed). Principal itself is just your
+    //     own money locked (in net worth), not counted. Withdraw is ignored
+    //     (returns principal + already-counted interest) — see IGNORE_IDS. ---
+    5450: { kind: 'compute', compute: d => (Number(d.worth) || 0) - (Number(d.amount) || 0), group: 'Bank interest' },
     // --- Property rental income + upkeep ---
     5937: { field: 'rent', sign: +1, group: 'Property rent' },
     5920: { field: 'upkeep_paid', sign: -1, group: 'Property upkeep' },
@@ -207,6 +209,11 @@
     }
     const map = LOGMAP[det.id];
     if (!map) return null;
+    if (map.kind === 'compute') {
+      const c = map.compute(data);
+      if (!c) return null;
+      return { t: entry.timestamp, g: map.group, c };
+    }
     if (map.kind === 'item') {
       const items = itemList(map.items(data)).map(x => ({ id: x.id, qty: x.qty, sign: map.sign }));
       if (!items.length) return null;
@@ -229,7 +236,7 @@
 
   // Intermediate trade-window steps — money moves here but the trade settles
   // via Trades in/out (4440/4441), so these must NOT be counted or surfaced.
-  const IGNORE_IDS = new Set([4442, 4443, 4480, 8166]);
+  const IGNORE_IDS = new Set([4442, 4443, 4480, 8166, 5451]);
 
   // Track unmapped logtypes that actually carry a cash field, so they're
   // surfaced (never silently dropped) and can be classified later.
@@ -333,30 +340,20 @@
     store.set('networth', keep);
   }
 
-  // Track city-bank investments. Interest isn't in the log, but each locked
-  // investment is guaranteed to pay `profit` at its `until` date. We record
-  // every distinct investment (keyed by invested_at) so that once it matures
-  // we can count its interest as realized profit in the period it landed.
+  // Realized bank interest is computed from the invest log entries
+  // (worth - amount). Here we just snapshot the ACTIVE investment's term/rate/
+  // maturity from user/money for an informational line in the panel.
   async function refreshBankProfit() {
     try {
       const data = await apiGet('/user/money');
       const cb = data.money && data.money.city_bank;
-      if (!cb) return;
-      const now = Math.floor(Date.now() / 1000);
-      const invs = store.get('bankinvestments', {});
-      if (cb.profit > 0 && cb.invested_at) {
-        const key = String(cb.invested_at);
-        // Always refresh so the active investment carries its term + rate.
-        invs[key] = {
-          invested_at: cb.invested_at, until: cb.until || 0, profit: cb.profit,
-          duration: cb.duration || 0, rate: cb.interest_rate || 0,
-        };
+      if (cb && cb.invested_at) {
+        store.set('bankcurrent', {
+          duration: cb.duration || 0, rate: cb.interest_rate || 0, until: cb.until || 0,
+        });
+      } else {
+        store.set('bankcurrent', null);
       }
-      // keep ~120 days of matured investments
-      for (const k of Object.keys(invs)) {
-        if (invs[k].until && invs[k].until < now - 120 * DAY) delete invs[k];
-      }
-      store.set('bankinvestments', invs);
     } catch (e) {}
   }
 
@@ -380,9 +377,10 @@
     'Item market': 'spend', 'Shops': 'spend', 'Bazaar buy': 'spend',
     'Travel goods': 'spend', 'Points market': 'spend', 'Trades (out)': 'spend',
     'Property upkeep': 'spend', 'Crime costs': 'spend', 'Mugged by others': 'spend',
+    'Bank interest': 'earn',
     'Faction vault (own money)': 'transfer', 'Money sent': 'transfer', 'Money received': 'transfer',
     'Items received': 'transfer', 'Items sent': 'transfer',
-    'Stock buy/sell': 'transfer', 'Bank principal (own money)': 'transfer',
+    'Stock buy/sell': 'transfer',
   };
 
   function aggregate(periodSec) {
@@ -416,21 +414,8 @@
       sums[sec] += net;
     }
 
-    // City-bank interest: realized payouts (investments matured within the
-    // period) count as earnings; still-locked investments are shown pending.
-    const invs = store.get('bankinvestments', {});
-    let bankRealized = 0, bankPending = 0, bankPendingTerm = null;
-    for (const k of Object.keys(invs)) {
-      const iv = invs[k];
-      if (!iv.until) continue;
-      if (iv.until > now) {
-        bankPending += iv.profit;                          // still locked
-        if (iv.duration) bankPendingTerm = { duration: iv.duration, rate: iv.rate };
-      } else if (iv.until >= from) {
-        bankRealized += iv.profit;                          // matured this period
-      }
-    }
-    if (bankRealized) { sections.earn.push(['Bank interest', bankRealized]); sums.earn += bankRealized; }
+    // (Bank interest now flows through movements as a 'Bank interest' group,
+    // computed from each invest entry's worth - amount.)
 
     for (const k of Object.keys(sections)) {
       sections[k].sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]));
@@ -448,7 +433,7 @@
     return {
       sections, sums,
       netActivities: sums.earn + sums.spend, // profit-from-activities (excl. transfers)
-      bankPending, bankPendingTerm,
+      bankCurrent: store.get('bankcurrent', null),
       nwProfit, count: movements.length,
     };
   }
@@ -574,10 +559,11 @@
          <span class="${a.nwProfit >= 0 ? 'tcf-pos' : 'tcf-neg'}">${fmt(a.nwProfit)}</span></div>`
       : `<div class="tcf-headline tcf-pending">Net worth change — needs 2+ daily snapshots (collecting…)</div>`;
 
-    const bt = a.bankPendingTerm;
-    const bankTermStr = bt && bt.duration ? ` — ${bt.duration}d @ ${bt.rate}%` : '';
-    const bankLine = a.bankPending
-      ? `<div class="tcf-row"><span class="tcf-grp">Bank interest (pending payout)${bankTermStr}</span><span class="tcf-pos">${fmt(a.bankPending)}</span></div>`
+    // Informational line: the currently active bank investment's term + rate
+    // (its interest is already counted under "Bank interest" when it was made).
+    const bc = a.bankCurrent;
+    const bankLine = bc && bc.duration
+      ? `<div class="tcf-note">Active bank investment: ${bc.duration}d @ ${bc.rate}%</div>`
       : '';
 
     const hasAny = a.sections.earn.length || a.sections.spend.length || a.sections.transfer.length;
