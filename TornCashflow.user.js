@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TornCashflow
 // @namespace    torn-cashflow-ledger
-// @version      0.4.5
+// @version      0.4.6
 // @description  Running profit & loss ledger for Torn. Categorizes every money movement in/out (job, crimes, market, casino, travel, dividends, etc.) from your own API key, values item gains/losses at market price, and shows a live cashflow panel on the home page. Auto-syncs from api.torn.com on page load (hourly at most) plus a manual sync button. All data comes from api.torn.com only and is stored locally in your browser; nothing goes to third parties. TornPDA: set injection time to END.
 // @author       AeC3
 // @match        https://www.torn.com/*
@@ -45,7 +45,7 @@
   const SCHEMA = 8;
   const DAY = 86400;
   const BACKFILL_DAYS = 30;
-  const CALL_GAP_MS = 700;        // stay under 100 calls/min
+  const CALL_GAP_MS = 1100;       // ~55/min — leaves headroom for your other scripts on the same key
   const ITEM_CACHE_TTL = 6 * 3600; // refresh item prices every 6h
   const NW_SNAPSHOT_GAP = 12 * 3600; // one networth snapshot per ~12h
 
@@ -154,17 +154,26 @@
   // API client (api.torn.com only, rate-limited)
   // ---------------------------------------------------------------------------
   let lastCall = 0;
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
   async function apiGet(path) {
     const key = store.get('apikey', '');
     if (!key) throw new Error('No API key set');
-    const wait = Math.max(0, CALL_GAP_MS - (Date.now() - lastCall));
-    if (wait) await new Promise(r => setTimeout(r, wait));
-    lastCall = Date.now();
     const sep = path.includes('?') ? '&' : '?';
-    const res = await fetch(`${API}${path}${sep}key=${encodeURIComponent(key)}`);
-    const json = await res.json();
-    if (json && json.error) throw new Error(`API ${json.error.code}: ${json.error.error}`);
-    return json;
+    const url = `${API}${path}${sep}key=${encodeURIComponent(key)}`;
+    for (let attempt = 0; ; attempt++) {
+      const wait = Math.max(0, CALL_GAP_MS - (Date.now() - lastCall));
+      if (wait) await sleep(wait);
+      lastCall = Date.now();
+      const res = await fetch(url);
+      const json = await res.json();
+      if (json && json.error) {
+        // code 5 = "Too many requests" (shared key with your other scripts).
+        // Back off and retry instead of failing the whole sync.
+        if (json.error.code === 5 && attempt < 4) { await sleep(4000 * (attempt + 1)); continue; }
+        throw new Error(`API ${json.error.code}: ${json.error.error}`);
+      }
+      return json;
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -275,14 +284,18 @@
     try {
       // Classification changed? Drop stored movements and force a full backfill
       // so historical entries are re-labelled under the current scheme.
-      if (store.get('schema', 0) !== SCHEMA) {
-        store.set('movements', []);
-        store.set('sync', { newest: 0 });
-        store.set('unmapped', {}); // rebuild fresh under current mapping + cash filter
-      }
-      const sync = store.get('sync', { newest: 0 });
+      // IMPORTANT: don't wipe stored data up front — if the backfill then fails
+      // (e.g. rate limit on a shared key), we'd be left with nothing. Instead
+      // force a full backfill and only REPLACE on success (below).
       const movements = store.get('movements', []);
-      const seenNewest = sync.newest || 0;
+      // Full backfill on schema change OR whenever we have no data at all
+      // (self-heals a panel that somehow ended up empty).
+      const fullBackfill = store.get('schema', 0) !== SCHEMA || movements.length === 0;
+      // The unmapped warning list is non-critical — safe to reset up front so it
+      // rebuilds during this backfill (recordUnmapped appends as we go).
+      if (fullBackfill) store.set('unmapped', {});
+      const sync = store.get('sync', { newest: 0 });
+      const seenNewest = fullBackfill ? 0 : (sync.newest || 0);
       const nowTs = Math.floor(Date.now() / 1000);
       const cutoff = nowTs - BACKFILL_DAYS * DAY;
       const collected = [];
@@ -310,8 +323,10 @@
         if (onProgress) onProgress(calls, oldest);
       }
 
-      // Merge + prune to BACKFILL window.
-      const merged = movements.concat(collected).filter(m => m.t >= cutoff);
+      // Merge + prune to BACKFILL window. On a full backfill we REPLACE
+      // (collected is the complete set); otherwise we merge with existing.
+      const base = fullBackfill ? [] : movements;
+      const merged = base.concat(collected).filter(m => m.t >= cutoff);
       merged.sort((a, b) => a.t - b.t);
       store.set('movements', merged);
       store.set('sync', { newest: newNewest, lastRun: nowTs, calls });
