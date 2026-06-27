@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TornCashflow
 // @namespace    torn-cashflow-ledger
-// @version      0.4.7
+// @version      0.4.8
 // @description  Running profit & loss ledger for Torn. Categorizes every money movement in/out (job, crimes, market, casino, travel, dividends, etc.) from your own API key, values item gains/losses at market price, and shows a live cashflow panel on the home page. Auto-syncs from api.torn.com on page load (hourly at most) plus a manual sync button. All data comes from api.torn.com only and is stored locally in your browser; nothing goes to third parties. TornPDA: set injection time to END.
 // @author       AeC3
 // @match        https://www.torn.com/*
@@ -523,14 +523,25 @@
     (document.head || document.documentElement).appendChild(style);
   }
 
-  // Mount the panel at the TOP of the page content (normal flow, not sticky).
-  // Uses a host-selector fallback chain so it doesn't depend on one exact node.
+  // Mount the panel just ABOVE the page's content title (the "Home" bar), i.e.
+  // directly under Torn's top status/money bar — not above the whole header.
+  // Anchors on the content title first; falls back to the top of the content
+  // area, then body, so it doesn't depend on one exact node.
   function mountPanel() {
     let panel = document.getElementById('tcf-panel');
     if (panel && panel.isConnected) return panel;
     injectStyle();
     panel = document.createElement('div');
     panel.id = 'tcf-panel';
+    // Preferred anchor: insert right before the content title so the panel sits
+    // between the money/status bar and the "Home" heading.
+    const titleBar = document.querySelector('.content-title') ||
+                     document.querySelector('[class*="titleContainer"]') ||
+                     document.querySelector('[class*="appHeader"]');
+    if (titleBar && titleBar.parentNode) {
+      titleBar.parentNode.insertBefore(panel, titleBar);
+      return panel;
+    }
     const host = [
       document.querySelector('.content-wrapper'),
       document.querySelector('[role="main"]'),
