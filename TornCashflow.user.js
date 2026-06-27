@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TornCashflow
 // @namespace    torn-cashflow-ledger
-// @version      0.4.8
+// @version      0.4.9
 // @description  Running profit & loss ledger for Torn. Categorizes every money movement in/out (job, crimes, market, casino, travel, dividends, etc.) from your own API key, values item gains/losses at market price, and shows a live cashflow panel on the home page. Auto-syncs from api.torn.com on page load (hourly at most) plus a manual sync button. All data comes from api.torn.com only and is stored locally in your browser; nothing goes to third parties. TornPDA: set injection time to END.
 // @author       AeC3
 // @match        https://www.torn.com/*
@@ -39,6 +39,7 @@
   // ---------------------------------------------------------------------------
   // Config / constants
   // ---------------------------------------------------------------------------
+  const VERSION = '0.4.9'; // keep in sync with @version above
   const API = 'https://api.torn.com/v2';
   // Bump when group labels / section classification change so stored movements
   // (which carry their group label) get cleared and re-backfilled cleanly.
@@ -562,7 +563,7 @@
 
     if (!hasKey) {
       panel.innerHTML = `
-        <div id="tcf-head"><span class="tcf-title">TornCashflow</span><span>v0.2.0</span></div>
+        <div id="tcf-head"><span class="tcf-title">TornCashflow</span><span>v${VERSION}</span></div>
         <div id="tcf-body">
           <div>Enter your Torn API key (reads log/money/networth only):</div>
           <input id="tcf-key" type="text" placeholder="API key" />
