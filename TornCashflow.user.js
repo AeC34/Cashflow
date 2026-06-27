@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TornCashflow
 // @namespace    torn-cashflow-ledger
-// @version      0.4.6
+// @version      0.4.7
 // @description  Running profit & loss ledger for Torn. Categorizes every money movement in/out (job, crimes, market, casino, travel, dividends, etc.) from your own API key, values item gains/losses at market price, and shows a live cashflow panel on the home page. Auto-syncs from api.torn.com on page load (hourly at most) plus a manual sync button. All data comes from api.torn.com only and is stored locally in your browser; nothing goes to third parties. TornPDA: set injection time to END.
 // @author       AeC3
 // @match        https://www.torn.com/*
@@ -271,6 +271,14 @@
   // key. Verified against real data.
   // ---------------------------------------------------------------------------
   let syncing = false;
+  let syncProgress = 0; // 0..1 fraction of the 30-day window backfilled
+
+  function updateSyncBar() {
+    const bar = document.getElementById('tcf-bar');
+    if (bar) bar.style.width = Math.round(syncProgress * 100) + '%';
+    const lbl = document.getElementById('tcf-bar-lbl');
+    if (lbl) lbl.textContent = `Loading… ${Math.round(syncProgress * 100)}%`;
+  }
 
   async function fetchLogPage(to) {
     const q = `/user/log?limit=100&sort=desc${to ? '&to=' + to : ''}`;
@@ -281,6 +289,8 @@
   async function runSync(onProgress) {
     if (syncing) return;
     syncing = true;
+    syncProgress = 0;
+    render(); // show the progress bar
     try {
       // Classification changed? Drop stored movements and force a full backfill
       // so historical entries are re-labelled under the current scheme.
@@ -317,6 +327,9 @@
           if (m) collected.push(m);
         }
         const oldest = page[page.length - 1].timestamp;
+        // Progress = how far back toward the 30-day cutoff we've reached.
+        syncProgress = Math.min(0.99, Math.max(0, (nowTs - oldest) / (nowTs - cutoff)));
+        updateSyncBar();
         if (!seenNewest && oldest <= cutoff) break; // backfill done
         if (oldest <= cutoff) break;                // safety
         to = oldest;
@@ -494,6 +507,8 @@
       .tcf-headline.tcf-pending{display:block;color:#999;font-weight:normal;font-size:11px;background:#222;border-color:#444}
       .tcf-activities{border-top-width:2px}
       .tcf-sechead.tcf-warn{color:#e0a85e}
+      #tcf-progress{height:6px;background:#2a2a2a;border-radius:3px;overflow:hidden;margin:6px 0 2px 0}
+      #tcf-bar{height:100%;background:#5ec46a;width:0;transition:width .25s ease}
       #tcf-foot{padding:8px 10px;background:#262626;font-size:11px;color:#999}
       #tcf-foot button{background:#3a5a3a;color:#fff;border:1px solid #5ec46a;border-radius:4px;
         padding:4px 8px;cursor:pointer;margin-right:6px}
@@ -597,6 +612,8 @@
       <div id="tcf-head"><span class="tcf-title">TornCashflow</span><span>${collapsed ? '▲' : '▼'}</span></div>
       <div id="tcf-body">
         <div id="tcf-tabs">${tabs}</div>
+        ${syncing ? `<div id="tcf-progress"><div id="tcf-bar" style="width:${Math.round(syncProgress * 100)}%"></div></div>
+          <div id="tcf-bar-lbl" class="tcf-note">Loading… ${Math.round(syncProgress * 100)}%</div>` : ''}
         ${headline}
         ${hasAny ? '' : '<div class="tcf-note">No movements in this period. Run a sync.</div>'}
         ${section('Earnings', a.sections.earn, 'Earnings total', a.sums.earn)}
