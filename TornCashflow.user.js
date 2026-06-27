@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TornCashflow
 // @namespace    torn-cashflow-ledger
-// @version      0.4.9
+// @version      0.5.0
 // @description  Running profit & loss ledger for Torn. Categorizes every money movement in/out (job, crimes, market, casino, travel, dividends, etc.) from your own API key, values item gains/losses at market price, and shows a live cashflow panel on the home page. Auto-syncs from api.torn.com on page load (hourly at most) plus a manual sync button. All data comes from api.torn.com only and is stored locally in your browser; nothing goes to third parties. TornPDA: set injection time to END.
 // @author       AeC3
 // @match        https://www.torn.com/*
@@ -39,7 +39,7 @@
   // ---------------------------------------------------------------------------
   // Config / constants
   // ---------------------------------------------------------------------------
-  const VERSION = '0.4.9'; // keep in sync with @version above
+  const VERSION = '0.5.0'; // keep in sync with @version above
   const API = 'https://api.torn.com/v2';
   // Bump when group labels / section classification change so stored movements
   // (which carry their group label) get cleared and re-backfilled cleanly.
@@ -452,18 +452,35 @@
 
     // Net-worth-based total profit over the period (nearest earlier snapshot).
     const snaps = store.get('networth', []);
-    let nwProfit = null;
+    let nwProfit = null, nwApprox = false, nwSpanSec = 0;
     if (snaps.length) {
       const start = snaps.filter(s => s.t <= from).pop() || snaps[0];
       const end = snaps[snaps.length - 1];
-      if (start && end && end.t > start.t) nwProfit = end.total - start.total;
+      if (start && end && end.t > start.t) {
+        nwProfit = end.total - start.total;
+        nwSpanSec = end.t - start.t;
+        // Snapshots are taken ~every 12h, so for short windows the start
+        // snapshot can sit well before `from`, making the number cover a longer
+        // span than requested. Flag it approximate when the start point deviates
+        // from the requested window start by more than half the period (or 18h,
+        // whichever is smaller).
+        const dev = Math.abs(start.t - from);
+        nwApprox = dev > Math.min(periodSec * 0.5, 18 * 3600);
+      }
     }
+
+    const netActivities = sums.earn + sums.spend; // profit-from-activities (excl. transfers)
+    const periodDays = Math.max(1, periodSec / DAY);
 
     return {
       sections, sums,
-      netActivities: sums.earn + sums.spend, // profit-from-activities (excl. transfers)
+      netActivities,
+      avgPerDay: netActivities / periodDays,
+      // Gap between measured net-worth change and logged cash activity — mostly
+      // unrealised stock/asset value drift that never appears as a transaction.
+      untracked: nwProfit !== null ? nwProfit - netActivities : null,
       bankCurrent: store.get('bankcurrent', null),
-      nwProfit, count: movements.length,
+      nwProfit, nwApprox, nwSpanSec, count: movements.length,
     };
   }
 
@@ -481,6 +498,22 @@
     const neg = n < 0;
     const s = '$' + Math.round(Math.abs(n)).toLocaleString('en-US');
     return neg ? '-' + s : s;
+  }
+
+  // Tiny inline net-worth trend line from stored snapshots (no external assets;
+  // pure SVG). Green if the trend is up over the visible range, red if down.
+  function sparkline(snaps) {
+    if (!snaps || snaps.length < 2) return '';
+    const w = 240, h = 32, pad = 3;
+    const xs = snaps.map(s => s.t), ys = snaps.map(s => s.total);
+    const minX = Math.min(...xs), maxX = Math.max(...xs);
+    const minY = Math.min(...ys), maxY = Math.max(...ys);
+    const sx = t => pad + (maxX > minX ? (t - minX) / (maxX - minX) : 0) * (w - 2 * pad);
+    const sy = v => (h - pad) - (maxY > minY ? (v - minY) / (maxY - minY) : 0.5) * (h - 2 * pad);
+    const pts = snaps.map(s => `${sx(s.t).toFixed(1)},${sy(s.total).toFixed(1)}`).join(' ');
+    const up = ys[ys.length - 1] >= ys[0];
+    return `<svg width="100%" height="${h}" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" style="display:block;margin:0 0 8px 0">
+      <polyline points="${pts}" fill="none" stroke="${up ? '#5ec46a' : '#e06a6a'}" stroke-width="1.5" vector-effect="non-scaling-stroke"/></svg>`;
   }
 
   function injectStyle() {
@@ -557,7 +590,8 @@
 
   function render() {
     const panel = mountPanel();
-    const collapsed = panel.classList.contains('tcf-collapsed');
+    const collapsed = store.get('collapsed', false);
+    panel.classList.toggle('tcf-collapsed', collapsed);
     const hasKey = !!store.get('apikey', '');
     const sync = store.get('sync', {});
 
@@ -596,10 +630,18 @@
     const lastRun = sync.lastRun ? new Date(sync.lastRun * 1000).toLocaleString('en-US') : 'never';
 
     // Headline = net-worth change (the only fully reliable profit number).
+    // For short windows the measured span can exceed the requested period (see
+    // nwApprox in aggregate) — say so honestly instead of pretending it's exact.
+    const spanLbl = a.nwApprox
+      ? ` <span style="font-weight:normal;font-size:10px;color:#999">(≈ last ${Math.round(a.nwSpanSec / 3600)}h)</span>`
+      : '';
     const headline = a.nwProfit !== null
-      ? `<div class="tcf-headline"><span>Net worth change</span>
-         <span class="${a.nwProfit >= 0 ? 'tcf-pos' : 'tcf-neg'}">${fmt(a.nwProfit)}</span></div>`
-      : `<div class="tcf-headline tcf-pending">Net worth change — needs 2+ daily snapshots (collecting…)</div>`;
+      ? `<div class="tcf-headline"><span>Net worth change${spanLbl}</span>
+         <span class="${a.nwProfit >= 0 ? 'tcf-pos' : 'tcf-neg'}">${a.nwApprox ? '≈ ' : ''}${fmt(a.nwProfit)}</span></div>`
+      : `<div class="tcf-headline tcf-pending">Net worth change — needs 2+ snapshots ~12h apart (collecting…)</div>`;
+
+    // Net-worth trend line from snapshots (whole stored range, up to ~90 days).
+    const spark = sparkline(store.get('networth', []));
 
     // Informational line: the currently active bank investment's term + rate
     // (its interest is already counted under "Bank interest" when it was made).
@@ -627,11 +669,18 @@
         ${syncing ? `<div id="tcf-progress"><div id="tcf-bar" style="width:${Math.round(syncProgress * 100)}%"></div></div>
           <div id="tcf-bar-lbl" class="tcf-note">Loading… ${Math.round(syncProgress * 100)}%</div>` : ''}
         ${headline}
+        ${spark}
         ${hasAny ? '' : '<div class="tcf-note">No movements in this period. Run a sync.</div>'}
         ${section('Earnings', a.sections.earn, 'Earnings total', a.sums.earn)}
         ${section('Spending', a.sections.spend, 'Spending total', a.sums.spend)}
         ${hasAny ? `<div class="tcf-row tcf-tot tcf-activities"><span>Net from activities</span>
           <span class="${a.netActivities >= 0 ? 'tcf-pos' : 'tcf-neg'}">${fmt(a.netActivities)}</span></div>` : ''}
+        ${hasAny ? `<div class="tcf-row"><span class="tcf-grp">Avg / day</span>
+          <span class="${a.avgPerDay >= 0 ? 'tcf-pos' : 'tcf-neg'}">${fmt(a.avgPerDay)}</span></div>` : ''}
+        ${a.untracked !== null ? `<div class="tcf-row"><span class="tcf-grp">Unrealised / untracked</span>
+          <span class="${a.untracked >= 0 ? 'tcf-pos' : 'tcf-neg'}">${fmt(a.untracked)}</span></div>
+          <div class="tcf-note">Gap between your net-worth change and logged cash activity — mostly stock/asset value drift that isn't recorded as a transaction.</div>` : ''}
+        ${hasAny ? '<div class="tcf-note">Item gains/losses are valued at today\'s market price, not the price when they moved.</div>' : ''}
         ${bankLine}
         ${section('Transfers — not counted as profit', a.sections.transfer, null, 0)}
         <div class="tcf-note">Transfers are value you already own moving around — faction-vault money (already in net worth), stock/bank moves, and money/items to-from other players. Not counted as profit. Net-worth change above is the reliable bottom line.</div>
@@ -643,7 +692,7 @@
       </div>`;
 
     document.getElementById('tcf-head').onclick = () => {
-      panel.classList.toggle('tcf-collapsed');
+      store.set('collapsed', !store.get('collapsed', false));
       render();
     };
     panel.querySelectorAll('#tcf-tabs button').forEach(b => {
