@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TornCashflow
 // @namespace    torn-cashflow-ledger
-// @version      0.6.2
+// @version      0.6.3
 // @description  Running profit & loss ledger for Torn. Categorizes every money movement in/out (job, crimes, market, casino, travel, dividends, etc.) from your own API key, values item gains/losses at market price, and shows a live cashflow panel on the home page. Auto-syncs from api.torn.com on page load (hourly at most) plus a manual sync button. All data comes from api.torn.com only and is stored locally in your browser; nothing goes to third parties. TornPDA: set injection time to END.
 // @author       AeC3
 // @match        https://www.torn.com/*
@@ -39,11 +39,11 @@
   // ---------------------------------------------------------------------------
   // Config / constants
   // ---------------------------------------------------------------------------
-  const VERSION = '0.6.2'; // keep in sync with @version above
+  const VERSION = '0.6.3'; // keep in sync with @version above
   const API = 'https://api.torn.com/v2';
   // Bump when group labels / section classification change so stored movements
   // (which carry their group label) get cleared and re-backfilled cleanly.
-  const SCHEMA = 14;
+  const SCHEMA = 15;
   const DAY = 86400;
   const BACKFILL_DAYS = 30;
   const CALL_GAP_MS = 1100;       // ~55/min — leaves headroom for your other scripts on the same key
@@ -121,6 +121,12 @@
     //     own money locked (in net worth), not counted. Withdraw is ignored
     //     (returns principal + already-counted interest) — see IGNORE_IDS. ---
     5450: { kind: 'compute', compute: d => (Number(d.worth) || 0) - (Number(d.amount) || 0), group: 'Bank interest' },
+    // 6012 = offshore bank interest. Logged under the "Travel" category (offshore
+    // banking is a travel feature), which is why it slipped past detection until
+    // 'interest' was added to CASH_FIELDS. Real profit like onshore interest; the
+    // `balance` field is your own principal (in net worth), not counted. Confirmed
+    // dump: {interest, balance}.
+    6012: { field: 'interest', sign: +1, group: 'Offshore interest' },
     // --- Property rental income + upkeep ---
     5937: { field: 'rent', sign: +1, group: 'Property rent' },
     5920: { field: 'upkeep_paid', sign: -1, group: 'Property upkeep' },
@@ -436,7 +442,7 @@
     'Travel goods': 'spend', 'Points market bought': 'spend', 'Trades (out)': 'spend',
     'Property upkeep': 'spend', 'Crime costs': 'spend', 'Mugged by others': 'spend',
     'Racing upgrades': 'spend',
-    'Bank interest': 'earn',
+    'Bank interest': 'earn', 'Offshore interest': 'earn',
     'Faction vault (own money)': 'transfer', 'Money sent': 'transfer', 'Money received': 'transfer',
     'Items received': 'transfer', 'Items sent': 'transfer',
     'Stock buy/sell': 'transfer', 'Faction give (sent)': 'transfer',
