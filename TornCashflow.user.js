@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TornCashflow
 // @namespace    torn-cashflow-ledger
-// @version      0.6.1
+// @version      0.6.2
 // @description  Running profit & loss ledger for Torn. Categorizes every money movement in/out (job, crimes, market, casino, travel, dividends, etc.) from your own API key, values item gains/losses at market price, and shows a live cashflow panel on the home page. Auto-syncs from api.torn.com on page load (hourly at most) plus a manual sync button. All data comes from api.torn.com only and is stored locally in your browser; nothing goes to third parties. TornPDA: set injection time to END.
 // @author       AeC3
 // @match        https://www.torn.com/*
@@ -39,11 +39,11 @@
   // ---------------------------------------------------------------------------
   // Config / constants
   // ---------------------------------------------------------------------------
-  const VERSION = '0.6.1'; // keep in sync with @version above
+  const VERSION = '0.6.2'; // keep in sync with @version above
   const API = 'https://api.torn.com/v2';
   // Bump when group labels / section classification change so stored movements
   // (which carry their group label) get cleared and re-backfilled cleanly.
-  const SCHEMA = 13;
+  const SCHEMA = 14;
   const DAY = 86400;
   const BACKFILL_DAYS = 30;
   const CALL_GAP_MS = 1100;       // ~55/min — leaves headroom for your other scripts on the same key
@@ -105,6 +105,10 @@
     // dumps carry money_given.
     6735: { field: 'money_given', sign: -1, group: 'Faction give (sent)' },
     6811: { field: 'money_given', sign: +1, group: 'Faction payday' },
+    // 6810 = YOU pay faction payday out to a member (giver side; 6811 is the
+    // receiver side). Money out to another player → transfer, like 6735. Confirmed
+    // dump: {faction, money_given, receivers:[id]}.
+    6810: { field: 'money_given', sign: -1, group: 'Faction payday (sent)' },
     // --- Stocks: dividends are income; buy/sell principal is your own money
     //     moving (transfer) — the gain/loss shows in net worth. ---
     5531: { field: 'money', sign: +1, group: 'Dividends' },
@@ -259,7 +263,7 @@
     'money', 'money_gained', 'money_lost', 'money_given', 'money_mugged', 'cost',
     'cost_total', 'worth', 'pay', 'fee', 'fees', 'amount', 'won_amount',
     'bet_amount', 'paid', 'wanted_reward', 'upkeep_paid', 'winnings', 'prize',
-    'payout', 'balance_change',
+    'payout', 'balance_change', 'interest',
   ];
 
   // Intermediate trade-window steps — money moves here but the trade settles
@@ -436,6 +440,7 @@
     'Faction vault (own money)': 'transfer', 'Money sent': 'transfer', 'Money received': 'transfer',
     'Items received': 'transfer', 'Items sent': 'transfer',
     'Stock buy/sell': 'transfer', 'Faction give (sent)': 'transfer',
+    'Faction payday (sent)': 'transfer',
   };
 
   function aggregate(periodSec) {
