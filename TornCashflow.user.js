@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TornCashflow
 // @namespace    torn-cashflow-ledger
-// @version      0.5.0
+// @version      0.5.1
 // @description  Running profit & loss ledger for Torn. Categorizes every money movement in/out (job, crimes, market, casino, travel, dividends, etc.) from your own API key, values item gains/losses at market price, and shows a live cashflow panel on the home page. Auto-syncs from api.torn.com on page load (hourly at most) plus a manual sync button. All data comes from api.torn.com only and is stored locally in your browser; nothing goes to third parties. TornPDA: set injection time to END.
 // @author       AeC3
 // @match        https://www.torn.com/*
@@ -658,9 +658,9 @@
     const umKeys = Object.keys(unmapped).sort((x, y) => unmapped[y].count - unmapped[x].count);
     const umSection = umKeys.length ? `
       <div class="tcf-sechead tcf-warn">⚠ Uncategorized money types — not in totals</div>
-      ${umKeys.map(k => `<div class="tcf-row"><span class="tcf-grp">${unmapped[k].title}</span>
+      ${umKeys.map(k => `<div class="tcf-row"><span class="tcf-grp">${unmapped[k].title} <span style="opacity:.55">#${k}</span></span>
         <span class="tcf-grp">×${unmapped[k].count}</span></div>`).join('')}
-      <div class="tcf-note">These money logtypes aren't classified yet, so they're excluded from every total above. Report them so they can be mapped.</div>` : '';
+      <div class="tcf-note">These money logtypes aren't classified yet, so they're excluded from every total above. Report the #id so they can be mapped.</div>` : '';
 
     panel.innerHTML = `
       <div id="tcf-head"><span class="tcf-title">TornCashflow</span><span>${collapsed ? '▲' : '▼'}</span></div>
