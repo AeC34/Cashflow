@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TornCashflow
 // @namespace    torn-cashflow-ledger
-// @version      0.5.4
+// @version      0.5.5
 // @description  Running profit & loss ledger for Torn. Categorizes every money movement in/out (job, crimes, market, casino, travel, dividends, etc.) from your own API key, values item gains/losses at market price, and shows a live cashflow panel on the home page. Auto-syncs from api.torn.com on page load (hourly at most) plus a manual sync button. All data comes from api.torn.com only and is stored locally in your browser; nothing goes to third parties. TornPDA: set injection time to END.
 // @author       AeC3
 // @match        https://www.torn.com/*
@@ -39,11 +39,11 @@
   // ---------------------------------------------------------------------------
   // Config / constants
   // ---------------------------------------------------------------------------
-  const VERSION = '0.5.4'; // keep in sync with @version above
+  const VERSION = '0.5.5'; // keep in sync with @version above
   const API = 'https://api.torn.com/v2';
   // Bump when group labels / section classification change so stored movements
   // (which carry their group label) get cleared and re-backfilled cleanly.
-  const SCHEMA = 11;
+  const SCHEMA = 12;
   const DAY = 86400;
   const BACKFILL_DAYS = 30;
   const CALL_GAP_MS = 1100;       // ~55/min — leaves headroom for your other scripts on the same key
@@ -80,9 +80,9 @@
     4200: { field: 'cost_total', sign: -1, group: 'Shops' },
     4201: { field: 'cost_total', sign: -1, group: 'Travel goods' },
     5010: { field: 'cost_total', sign: -1, group: 'Points market bought' },
-    // 5011 (Points market sell) intentionally NOT mapped yet: the money field is
-    // unconfirmed. Left unmapped so its raw data surfaces in the panel's
-    // uncategorized section for the user to copy and report, then map it right.
+    // Selling points to another player = cash in. Field confirmed against a real
+    // 5011 dump: {buyer, quantity, cost_each, cost_total, listing_id}.
+    5011: { field: 'cost_total', sign: +1, group: 'Points market sold' },
     // --- Trades: final movements only (the "add" steps are intermediate) ---
     4440: { field: 'money', sign: -1, group: 'Trades (out)' },
     4441: { field: 'money', sign: +1, group: 'Trades (in)' },
@@ -407,7 +407,7 @@
     'Crimes': 'earn', 'Crime loot': 'earn', 'Mugging': 'earn',
     'Casino': 'earn', 'Job pay': 'earn', 'Faction payout': 'earn', 'Dividends': 'earn',
     'Dividends (items)': 'earn', 'Property rent': 'earn', 'Item finds': 'earn',
-    'Bazaar sell': 'earn', 'Trades (in)': 'earn',
+    'Bazaar sell': 'earn', 'Trades (in)': 'earn', 'Points market sold': 'earn',
     'Education': 'spend', 'Rehab': 'spend', 'Subscription': 'spend',
     'Item market': 'spend', 'Shops': 'spend', 'Bazaar buy': 'spend',
     'Travel goods': 'spend', 'Points market bought': 'spend', 'Trades (out)': 'spend',
