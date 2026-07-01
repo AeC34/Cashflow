@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TornCashflow
 // @namespace    torn-cashflow-ledger
-// @version      0.6.0
+// @version      0.6.1
 // @description  Running profit & loss ledger for Torn. Categorizes every money movement in/out (job, crimes, market, casino, travel, dividends, etc.) from your own API key, values item gains/losses at market price, and shows a live cashflow panel on the home page. Auto-syncs from api.torn.com on page load (hourly at most) plus a manual sync button. All data comes from api.torn.com only and is stored locally in your browser; nothing goes to third parties. TornPDA: set injection time to END.
 // @author       AeC3
 // @match        https://www.torn.com/*
@@ -39,7 +39,7 @@
   // ---------------------------------------------------------------------------
   // Config / constants
   // ---------------------------------------------------------------------------
-  const VERSION = '0.6.0'; // keep in sync with @version above
+  const VERSION = '0.6.1'; // keep in sync with @version above
   const API = 'https://api.torn.com/v2';
   // Bump when group labels / section classification change so stored movements
   // (which carry their group label) get cleared and re-backfilled cleanly.
@@ -120,9 +120,8 @@
     // --- Property rental income + upkeep ---
     5937: { field: 'rent', sign: +1, group: 'Property rent' },
     5920: { field: 'upkeep_paid', sign: -1, group: 'Property upkeep' },
-    // 5928 = selling a property (asset -> cash, already in net worth) → transfer.
-    // Confirmed dump: {property, property_id, cost, buyer, ...}; `cost` taken as
-    // the sale proceeds (sign not independently verified, but transfer either way).
+    // 5928 = selling a property. Counted as profit (earn) per user. Confirmed
+    // dump: {property, property_id, cost, buyer, ...}; `cost` = sale proceeds.
     5928: { field: 'cost', sign: +1, group: 'Property sell' },
     // --- Missions ---
     7815: { field: 'money', sign: +1, group: 'Missions' }, // credits reward not counted
@@ -427,7 +426,7 @@
     'Casino': 'earn', 'Job pay': 'earn', 'Faction payout': 'earn', 'Dividends': 'earn',
     'Dividends (items)': 'earn', 'Property rent': 'earn', 'Item finds': 'earn',
     'Bazaar sell': 'earn', 'Trades (in)': 'earn', 'Points market sold': 'earn',
-    'Missions': 'earn', 'Faction payday': 'earn',
+    'Missions': 'earn', 'Faction payday': 'earn', 'Property sell': 'earn',
     'Education': 'spend', 'Rehab': 'spend', 'Subscription': 'spend',
     'Item market': 'spend', 'Shops': 'spend', 'Bazaar buy': 'spend',
     'Travel goods': 'spend', 'Points market bought': 'spend', 'Trades (out)': 'spend',
@@ -436,7 +435,7 @@
     'Bank interest': 'earn',
     'Faction vault (own money)': 'transfer', 'Money sent': 'transfer', 'Money received': 'transfer',
     'Items received': 'transfer', 'Items sent': 'transfer',
-    'Stock buy/sell': 'transfer', 'Property sell': 'transfer', 'Faction give (sent)': 'transfer',
+    'Stock buy/sell': 'transfer', 'Faction give (sent)': 'transfer',
   };
 
   function aggregate(periodSec) {
