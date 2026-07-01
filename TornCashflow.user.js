@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TornCashflow
 // @namespace    torn-cashflow-ledger
-// @version      0.5.5
+// @version      0.6.0
 // @description  Running profit & loss ledger for Torn. Categorizes every money movement in/out (job, crimes, market, casino, travel, dividends, etc.) from your own API key, values item gains/losses at market price, and shows a live cashflow panel on the home page. Auto-syncs from api.torn.com on page load (hourly at most) plus a manual sync button. All data comes from api.torn.com only and is stored locally in your browser; nothing goes to third parties. TornPDA: set injection time to END.
 // @author       AeC3
 // @match        https://www.torn.com/*
@@ -39,11 +39,11 @@
   // ---------------------------------------------------------------------------
   // Config / constants
   // ---------------------------------------------------------------------------
-  const VERSION = '0.5.5'; // keep in sync with @version above
+  const VERSION = '0.6.0'; // keep in sync with @version above
   const API = 'https://api.torn.com/v2';
   // Bump when group labels / section classification change so stored movements
   // (which carry their group label) get cleared and re-backfilled cleanly.
-  const SCHEMA = 12;
+  const SCHEMA = 13;
   const DAY = 86400;
   const BACKFILL_DAYS = 30;
   const CALL_GAP_MS = 1100;       // ~55/min — leaves headroom for your other scripts on the same key
@@ -64,6 +64,9 @@
   const LOGMAP = {
     // --- Crimes ---
     9015: { field: 'money_gained', sign: +1, group: 'Crimes' },
+    // 9056 = a specific crime success (skimming "sell card details") that carries
+    // its own money_gained. Confirmed dump: {crime_action, money_gained, ...}.
+    9056: { field: 'money_gained', sign: +1, group: 'Crimes' },
     9020: { kind: 'item', sign: +1, group: 'Crime loot', items: d => d.items_gained },
     // --- Attacking ---
     8155: { field: 'money_mugged', sign: +1, group: 'Mugging' },         // YOU mug someone (gain)
@@ -97,6 +100,11 @@
     // (6795) are real earnings.
     6736: { field: 'money_given', sign: +1, group: 'Faction vault (own money)' },
     6795: { field: 'balance_change', sign: +1, group: 'Faction payout' },
+    // 6735 = you give money to another member (money out to a player) → transfer,
+    // like Money sent. 6811 = faction payday paid TO you → income. Both confirmed
+    // dumps carry money_given.
+    6735: { field: 'money_given', sign: -1, group: 'Faction give (sent)' },
+    6811: { field: 'money_given', sign: +1, group: 'Faction payday' },
     // --- Stocks: dividends are income; buy/sell principal is your own money
     //     moving (transfer) — the gain/loss shows in net worth. ---
     5531: { field: 'money', sign: +1, group: 'Dividends' },
@@ -112,6 +120,14 @@
     // --- Property rental income + upkeep ---
     5937: { field: 'rent', sign: +1, group: 'Property rent' },
     5920: { field: 'upkeep_paid', sign: -1, group: 'Property upkeep' },
+    // 5928 = selling a property (asset -> cash, already in net worth) → transfer.
+    // Confirmed dump: {property, property_id, cost, buyer, ...}; `cost` taken as
+    // the sale proceeds (sign not independently verified, but transfer either way).
+    5928: { field: 'cost', sign: +1, group: 'Property sell' },
+    // --- Missions ---
+    7815: { field: 'money', sign: +1, group: 'Missions' }, // credits reward not counted
+    // --- Racing ---
+    8705: { field: 'cost', sign: -1, group: 'Racing upgrades' }, // car upgrade purchase
     // --- Consumption / fees ---
     5960: { field: 'cost', sign: -1, group: 'Education' },
     6005: { field: 'cost', sign: -1, group: 'Rehab' },
@@ -249,7 +265,10 @@
 
   // Intermediate trade-window steps — money moves here but the trade settles
   // via Trades in/out (4440/4441), so these must NOT be counted or surfaced.
-  const IGNORE_IDS = new Set([4442, 4443, 4480, 8166, 5451]);
+  // 4480/4481 = the OTHER user adding/removing money in the trade (not yours).
+  // 5521 = stock merge; its `amount` is a share count, not cash, so it would
+  // otherwise be mis-flagged as an unmapped money type.
+  const IGNORE_IDS = new Set([4442, 4443, 4480, 4481, 8166, 5451, 5521]);
 
   // Track unmapped logtypes that actually carry a cash field, so they're
   // surfaced (never silently dropped) and can be classified later.
@@ -408,14 +427,16 @@
     'Casino': 'earn', 'Job pay': 'earn', 'Faction payout': 'earn', 'Dividends': 'earn',
     'Dividends (items)': 'earn', 'Property rent': 'earn', 'Item finds': 'earn',
     'Bazaar sell': 'earn', 'Trades (in)': 'earn', 'Points market sold': 'earn',
+    'Missions': 'earn', 'Faction payday': 'earn',
     'Education': 'spend', 'Rehab': 'spend', 'Subscription': 'spend',
     'Item market': 'spend', 'Shops': 'spend', 'Bazaar buy': 'spend',
     'Travel goods': 'spend', 'Points market bought': 'spend', 'Trades (out)': 'spend',
     'Property upkeep': 'spend', 'Crime costs': 'spend', 'Mugged by others': 'spend',
+    'Racing upgrades': 'spend',
     'Bank interest': 'earn',
     'Faction vault (own money)': 'transfer', 'Money sent': 'transfer', 'Money received': 'transfer',
     'Items received': 'transfer', 'Items sent': 'transfer',
-    'Stock buy/sell': 'transfer',
+    'Stock buy/sell': 'transfer', 'Property sell': 'transfer', 'Faction give (sent)': 'transfer',
   };
 
   function aggregate(periodSec) {
