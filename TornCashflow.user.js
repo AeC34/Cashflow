@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TornCashflow
 // @namespace    torn-cashflow-ledger
-// @version      0.5.2
+// @version      0.5.3
 // @description  Running profit & loss ledger for Torn. Categorizes every money movement in/out (job, crimes, market, casino, travel, dividends, etc.) from your own API key, values item gains/losses at market price, and shows a live cashflow panel on the home page. Auto-syncs from api.torn.com on page load (hourly at most) plus a manual sync button. All data comes from api.torn.com only and is stored locally in your browser; nothing goes to third parties. TornPDA: set injection time to END.
 // @author       AeC3
 // @match        https://www.torn.com/*
@@ -39,11 +39,11 @@
   // ---------------------------------------------------------------------------
   // Config / constants
   // ---------------------------------------------------------------------------
-  const VERSION = '0.5.2'; // keep in sync with @version above
+  const VERSION = '0.5.3'; // keep in sync with @version above
   const API = 'https://api.torn.com/v2';
   // Bump when group labels / section classification change so stored movements
   // (which carry their group label) get cleared and re-backfilled cleanly.
-  const SCHEMA = 9;
+  const SCHEMA = 10;
   const DAY = 86400;
   const BACKFILL_DAYS = 30;
   const CALL_GAP_MS = 1100;       // ~55/min — leaves headroom for your other scripts on the same key
@@ -263,7 +263,10 @@
     if (!hasCash) return; // money category but no actual cash moved
     const um = store.get('unmapped', {});
     const k = String(d.id);
-    if (!um[k]) um[k] = { title: d.title, category: d.category, count: 0 };
+    // Keep one raw sample per type so the user can copy it and send it to the
+    // author to work out the correct money field/sign (see the panel's
+    // uncategorized section). Captured once, on first sight.
+    if (!um[k]) um[k] = { title: d.title, category: d.category, count: 0, sample: data };
     um[k].count++;
     store.set('unmapped', um);
   }
@@ -553,6 +556,10 @@
         border:1px solid #444;border-radius:4px;margin:6px 0}
       .tcf-collapsed #tcf-body,.tcf-collapsed #tcf-foot{display:none}
       .tcf-note{color:#888;font-size:10px;margin-top:6px}
+      .tcf-raw{width:100%;box-sizing:border-box;background:#111;color:#9c9;border:1px solid #444;
+        border-radius:4px;font:10px/1.3 monospace;margin:2px 0;padding:4px;resize:vertical}
+      .tcf-copy{background:#2e2e2e;color:#ccc;border:1px solid #444;border-radius:4px;
+        padding:2px 8px;cursor:pointer;font-size:10px;margin-bottom:8px}
     `;
     const style = document.createElement('style');
     style.id = 'tcf-style';
@@ -659,11 +666,18 @@
     // (never silently dropped). Cumulative across all synced data.
     const unmapped = store.get('unmapped', {});
     const umKeys = Object.keys(unmapped).sort((x, y) => unmapped[y].count - unmapped[x].count);
+    const esc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
     const umSection = umKeys.length ? `
       <div class="tcf-sechead tcf-warn">⚠ Uncategorized money types — not in totals</div>
-      ${umKeys.map(k => `<div class="tcf-row"><span class="tcf-grp">${unmapped[k].title} <span style="opacity:.55">#${k}</span></span>
-        <span class="tcf-grp">×${unmapped[k].count}</span></div>`).join('')}
-      <div class="tcf-note">These money logtypes aren't classified yet, so they're excluded from every total above. Report the #id so they can be mapped.</div>` : '';
+      ${umKeys.map(k => {
+        const u = unmapped[k];
+        const raw = JSON.stringify({ id: Number(k), title: u.title, category: u.category, data: u.sample || {} });
+        return `<div class="tcf-row"><span class="tcf-grp">${esc(u.title)} <span style="opacity:.55">#${k}</span></span>
+        <span class="tcf-grp">×${u.count}</span></div>
+        <textarea class="tcf-raw" readonly rows="2">${esc(raw)}</textarea>
+        <button class="tcf-copy">Copy raw data</button>`;
+      }).join('')}
+      <div class="tcf-note">These money logtypes aren't classified yet, so they're excluded from every total above. Copy the raw data above and send it to the author so they can be mapped.</div>` : '';
 
     panel.innerHTML = `
       <div id="tcf-head"><span class="tcf-title">TornCashflow</span><span>${collapsed ? '▲' : '▼'}</span></div>
@@ -708,6 +722,21 @@
       render();
       runSync().then(render).catch(err => { alert('TornCashflow: ' + err.message); render(); });
     };
+    panel.querySelectorAll('.tcf-copy').forEach(btn => {
+      btn.onclick = (e) => {
+        e.stopPropagation();
+        const ta = btn.previousElementSibling; // the .tcf-raw textarea
+        const text = (ta && ta.value) || '';
+        const flash = () => { const o = btn.textContent; btn.textContent = 'Copied!'; setTimeout(() => { btn.textContent = o; }, 1500); };
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(text).then(flash).catch(() => { if (ta) { ta.select(); flash(); } });
+        } else if (ta) {
+          ta.select();
+          try { document.execCommand('copy'); } catch (e2) { /* user can copy manually */ }
+          flash();
+        }
+      };
+    });
   }
 
   // ---------------------------------------------------------------------------
