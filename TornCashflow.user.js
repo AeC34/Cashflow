@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         TornCashflow
 // @namespace    torn-cashflow-ledger
-// @version      0.6.3
+// @version      0.7.0
 // @description  Running profit & loss ledger for Torn. Categorizes every money movement in/out (job, crimes, market, casino, travel, dividends, etc.) from your own API key, values item gains/losses at market price, and shows a live cashflow panel on the home page. Auto-syncs from api.torn.com on page load (hourly at most) plus a manual sync button. All data comes from api.torn.com only and is stored locally in your browser; nothing goes to third parties. TornPDA: set injection time to END.
 // @author       AeC3
 // @match        https://www.torn.com/*
@@ -39,7 +39,7 @@
   // ---------------------------------------------------------------------------
   // Config / constants
   // ---------------------------------------------------------------------------
-  const VERSION = '0.6.3'; // keep in sync with @version above
+  const VERSION = '0.7.0'; // keep in sync with @version above
   const API = 'https://api.torn.com/v2';
   // Bump when group labels / section classification change so stored movements
   // (which carry their group label) get cleared and re-backfilled cleanly.
@@ -397,7 +397,9 @@
     if (last && (nowTs - last.t) < NW_SNAPSHOT_GAP) return;
     const data = await apiGet('/user/networth');
     const nw = data.networth || {};
-    snaps.push({ t: nowTs, total: nw.total || 0 });
+    // `stock` lets us break out unrealised stock price-drift from the residual
+    // later. Older snapshots lack it — consumers must guard for its absence.
+    snaps.push({ t: nowTs, total: nw.total || 0, stock: nw.stockmarket || 0 });
     // keep ~90 days of snapshots
     const keep = snaps.filter(s => s.t >= nowTs - 90 * DAY);
     store.set('networth', keep);
@@ -490,9 +492,11 @@
     // Net-worth-based total profit over the period (nearest earlier snapshot).
     const snaps = store.get('networth', []);
     let nwProfit = null, nwApprox = false, nwSpanSec = 0;
+    let startSnap = null, endSnap = null;
     if (snaps.length) {
       const start = snaps.filter(s => s.t <= from).pop() || snaps[0];
       const end = snaps[snaps.length - 1];
+      startSnap = start; endSnap = end;
       if (start && end && end.t > start.t) {
         nwProfit = end.total - start.total;
         nwSpanSec = end.t - start.t;
@@ -509,13 +513,38 @@
     const netActivities = sums.earn + sums.spend; // profit-from-activities (excl. transfers)
     const periodDays = Math.max(1, periodSec / DAY);
 
+    // Gap between measured net-worth change and logged cash activity — mostly
+    // unrealised stock/asset value drift that never appears as a transaction.
+    const untracked = nwProfit !== null ? nwProfit - netActivities : null;
+
+    // Split the residual: measure unrealised STOCK price-drift explicitly from
+    // the networth snapshots' stock component, and leave everything else
+    // (item/asset drift + any transactions missed to log truncation) as the
+    // "unexplained" remainder. Only attempt this when BOTH snapshots carry the
+    // stock component (added v0.7.0), the window isn't approximate (misaligned
+    // snapshots would corrupt the delta), and the holding is non-zero — that
+    // last guard also makes a wrong API field name fail safe to the lumped row.
+    //   Δstock = netInvested + priceDrift, where netInvested = -(stock buy/sell
+    //   cash). Stock buy/sell is <0 when net bought, so priceDrift = Δstock +
+    //   stockBuySell.
+    let unrealisedStock = null, unexplained = null, stockValueNow = 0;
+    if (untracked !== null && !nwApprox && startSnap && endSnap &&
+        typeof startSnap.stock === 'number' && typeof endSnap.stock === 'number' &&
+        endSnap.stock > 0) {
+      const stockBuySell = groups['Stock buy/sell'] || 0;
+      unrealisedStock = (endSnap.stock - startSnap.stock) + stockBuySell;
+      unexplained = untracked - unrealisedStock;
+      stockValueNow = endSnap.stock;
+    }
+
     return {
       sections, sums,
       netActivities,
       avgPerDay: netActivities / periodDays,
-      // Gap between measured net-worth change and logged cash activity — mostly
-      // unrealised stock/asset value drift that never appears as a transaction.
-      untracked: nwProfit !== null ? nwProfit - netActivities : null,
+      untracked,
+      // Explicit unrealised stock price-drift + the leftover we can't attribute.
+      // Both null when the split can't be computed (fall back to `untracked`).
+      unrealisedStock, unexplained, stockValueNow,
       bankCurrent: store.get('bankcurrent', null),
       nwProfit, nwApprox, nwSpanSec, count: movements.length,
     };
@@ -725,9 +754,15 @@
           <span class="${a.netActivities >= 0 ? 'tcf-pos' : 'tcf-neg'}">${fmt(a.netActivities)}</span></div>` : ''}
         ${hasAny ? `<div class="tcf-row"><span class="tcf-grp">Avg / day</span>
           <span class="${a.avgPerDay >= 0 ? 'tcf-pos' : 'tcf-neg'}">${fmt(a.avgPerDay)}</span></div>` : ''}
-        ${a.untracked !== null ? `<div class="tcf-row"><span class="tcf-grp">Unrealised / untracked</span>
+        ${a.untracked !== null && a.unrealisedStock !== null ? `
+          <div class="tcf-row"><span class="tcf-grp">Unrealised stock drift (market up/down)</span>
+          <span class="${a.unrealisedStock >= 0 ? 'tcf-pos' : 'tcf-neg'}">${fmt(a.unrealisedStock)}</span></div>
+          <div class="tcf-row"><span class="tcf-grp">Other untracked</span>
+          <span class="${a.unexplained >= 0 ? 'tcf-pos' : 'tcf-neg'}">${fmt(a.unexplained)}</span></div>
+          <div class="tcf-note">Stock drift is the live market value change on your holdings (gross — Torn hasn't taken a fee, you haven't sold). Sold in full today, the 0.1% stock sell fee would be ≈ ${fmt(a.stockValueNow * 0.001)}. "Other untracked" is item/asset value drift plus anything missing from the log.</div>`
+        : (a.untracked !== null ? `<div class="tcf-row"><span class="tcf-grp">Unrealised / untracked</span>
           <span class="${a.untracked >= 0 ? 'tcf-pos' : 'tcf-neg'}">${fmt(a.untracked)}</span></div>
-          <div class="tcf-note">Gap between your net-worth change and logged cash activity — mostly stock/asset value drift that isn't recorded as a transaction.</div>` : ''}
+          <div class="tcf-note">Gap between your net-worth change and logged cash activity — mostly stock/asset value drift that isn't recorded as a transaction.</div>` : '')}
         ${hasAny ? '<div class="tcf-note">Item gains/losses are valued at today\'s market price, not the price when they moved.</div>' : ''}
         ${bankLine}
         ${section('Transfers — not counted as profit', a.sections.transfer, null, 0)}
